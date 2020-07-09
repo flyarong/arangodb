@@ -800,7 +800,7 @@ void ClusterInfo::loadPlan() {
         try {
           LogicalView::ptr view;
           auto res = LogicalView::instantiate(  // instantiate
-              view, *vocbase, viewPairSlice.value, newPlanVersion  // args
+              view, *vocbase, viewPairSlice.value
           );
 
           if (!res.ok() || !view) {
@@ -1017,18 +1017,18 @@ void ClusterInfo::loadPlan() {
 
             if (type.isInteger() && type.getUInt() == TRI_COL_TYPE_EDGE) {
               newCollection = std::make_shared<VirtualSmartEdgeCollection>(  // create collection
-                  *vocbase, collectionSlice, newPlanVersion  // args
+                  *vocbase, collectionSlice
               );
             } else {
               newCollection = std::make_shared<SmartVertexCollection>(  // create collection
-                  *vocbase, collectionSlice, newPlanVersion  // args
+                  *vocbase, collectionSlice
               );
             }
           } else
 #endif
           {
             newCollection = std::make_shared<LogicalCollection>(  // create collection
-                *vocbase, collectionSlice, true, newPlanVersion  // args
+                *vocbase, collectionSlice, true
             );
           }
 

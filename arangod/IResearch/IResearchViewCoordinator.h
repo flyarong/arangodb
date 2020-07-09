@@ -106,7 +106,7 @@ class IResearchViewCoordinator final : public arangodb::LogicalView {
  private:
   struct ViewFactory;  // forward declaration
 
-  IResearchViewCoordinator(TRI_vocbase_t& vocbase, velocypack::Slice info, uint64_t planVersion);
+  IResearchViewCoordinator(TRI_vocbase_t& vocbase, velocypack::Slice info);
 
   std::unordered_map<TRI_voc_cid_t, std::pair<std::string, arangodb::velocypack::Builder>> _collections;  // transient member, not persisted
   mutable irs::async_utils::read_write_mutex _mutex;  // for use with '_collections'

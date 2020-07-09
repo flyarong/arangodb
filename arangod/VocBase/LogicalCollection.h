@@ -79,7 +79,7 @@ class LogicalCollection : public LogicalDataSource {
  public:
   LogicalCollection() = delete;
   LogicalCollection(TRI_vocbase_t& vocbase, velocypack::Slice const& info,
-                    bool isAStub, uint64_t planVersion = 0);
+                    bool isAStub);
   LogicalCollection(LogicalCollection const&) = delete;
   LogicalCollection& operator=(LogicalCollection const&) = delete;
   ~LogicalCollection() override;
