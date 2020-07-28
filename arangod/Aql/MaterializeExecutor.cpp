@@ -116,15 +116,29 @@ std::pair<ExecutionState, NoStats> arangodb::aql::MaterializeExecutor<T>::produc
       }
       collection = _collection;
     } else {
+
+      auto collectionIdSlice = input.getValue(collectionSource).slice();
+      if (!collectionIdSlice.isNumber()) {
+        LOG_TOPIC("608dd", WARN, arangodb::Logger::AQL) << "Late materialize has unexpected slice for collectionIdSlice:" << collectionIdSlice.typeName();
+      }
+      if (!collectionIdSlice.isUInt()) {
+        LOG_TOPIC("7428c", WARN, arangodb::Logger::AQL) << "Late materialize has not UInt slice for collectionIdSlice:" << collectionIdSlice.typeName();
+      }
       collection =
-        reinterpret_cast<arangodb::LogicalCollection const*>(
-          input.getValue(collectionSource).slice().getUInt());
+        reinterpret_cast<arangodb::LogicalCollection const*>(collectionIdSlice.getUInt());
     }
     TRI_ASSERT(collection != nullptr);
     _readDocumentContext._inputRow = &input;
     _readDocumentContext._outputRow = &output;
+    auto docIdSlice = input.getValue(docRegId).slice();
+    if (!docIdSlice.isNumber()) {
+      LOG_TOPIC("7c9f6", WARN, arangodb::Logger::AQL) << "Late materialize has unexpected slice for documentId:" << docIdSlice.typeName();
+    }
+    if (!docIdSlice.isUInt()) {
+      LOG_TOPIC("f7270", WARN, arangodb::Logger::AQL) << "Late materialize has not UInt slice for documentId:" << docIdSlice.typeName();
+    }
     written = collection->readDocumentWithCallback(trx,
-      LocalDocumentId(input.getValue(docRegId).slice().getUInt()),
+      LocalDocumentId(docIdSlice.getUInt()),
       callback);
   } while (!written && state != ExecutionState::DONE);
   return {state, NoStats{}};
