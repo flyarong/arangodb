@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2019 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -34,7 +35,7 @@
 
 #include <velocypack/Iterator.h>
 
-NS_LOCAL
+namespace {
 
 static const char* collectionName1 = "collection_1";
 static const char* collectionName2 = "collection_2";
@@ -247,7 +248,7 @@ class IResearchQueryNoMaterializationTest : public IResearchQueryTest {
   }
 };
 
-NS_END
+}
 
 // -----------------------------------------------------------------------------
 // --SECTION--                                                        test suite

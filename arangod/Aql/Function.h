@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,7 +55,7 @@ struct Function {
 
     /// @brief exclude the function from being evaluated during AST
     /// optimizations evaluation of function will only happen at query runtime
-    NoEval = 8
+    NoEval = 8,
   };
 
   /// @brief helper for building flags
@@ -72,6 +72,11 @@ struct Function {
   Function(std::string const& name, char const* arguments,
            std::underlying_type<Flags>::type flags,
            FunctionImplementation implementation = nullptr);
+
+#ifdef ARANGODB_USE_GOOGLE_TESTS
+  Function(std::string const& name,
+           FunctionImplementation implementation);
+#endif
 
   /// @brief return whether a specific flag is set for the function
   bool hasFlag(Flags flag) const;

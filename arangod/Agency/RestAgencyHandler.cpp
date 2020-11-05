@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -691,9 +691,10 @@ RestStatus RestAgencyHandler::handleConfig() {
     body.add("leaderId", Value(_agent->leaderID()));
     body.add("commitIndex", Value(last));
     _agent->lastAckedAgo(body);
-    LOG_TOPIC("ddeea", DEBUG, Logger::AGENCY) << "handleConfig after lastAckedAgo";
+    LOG_TOPIC("ddeae", DEBUG, Logger::AGENCY) << "handleConfig after lastAckedAgo";
     body.add("configuration", _agent->config().toBuilder()->slice());
-    body.add("engine", VPackValue(EngineSelectorFeature::engineName()));
+    body.add("engine",
+             VPackValue(server().getFeature<EngineSelectorFeature>().engineName()));
     body.add("version", VPackValue(ARANGODB_VERSION));
   }
 
@@ -731,7 +732,7 @@ RestStatus RestAgencyHandler::handleState() {
     _agent->readDB(body);
   }
   auto ctx = std::make_shared<transaction::StandaloneContext>(_vocbase);
-  generateResult(rest::ResponseCode::OK, body.slice(), ctx->getVPackOptionsForDump());
+  generateResult(rest::ResponseCode::OK, body.slice(), ctx->getVPackOptions());
   return RestStatus::DONE;
 }
 

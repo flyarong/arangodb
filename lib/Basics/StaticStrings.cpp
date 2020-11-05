@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -66,6 +67,7 @@ std::string const StaticStrings::Prefix("prefix");
 std::string const StaticStrings::Overwrite("overwrite");
 std::string const StaticStrings::OverwriteMode("overwriteMode");
 std::string const StaticStrings::PreserveRevisionIds("preserveRevisionIds");
+std::string const StaticStrings::Compact("compact");
 
 // replication headers
 std::string const StaticStrings::ReplicationHeaderCheckMore(
@@ -233,13 +235,10 @@ std::string const StaticStrings::EncodingDeflate("deflate");
 // collection attributes
 std::string const StaticStrings::CacheEnabled("cacheEnabled");
 std::string const StaticStrings::DistributeShardsLike("distributeShardsLike");
-std::string const StaticStrings::DoCompact("doCompact");
 std::string const StaticStrings::Indexes("indexes");
 std::string const StaticStrings::IsSmart("isSmart");
 std::string const StaticStrings::IsSmartChild("isSmartChild");
 std::string const StaticStrings::NumberOfShards("numberOfShards");
-std::string const StaticStrings::IndexBuckets("indexBuckets");
-std::string const StaticStrings::JournalSize("journalSize");
 std::string const StaticStrings::MinReplicationFactor("minReplicationFactor");
 std::string const StaticStrings::MinRevision("minRevision");
 std::string const StaticStrings::ObjectId("objectId");
@@ -250,7 +249,6 @@ std::string const StaticStrings::Sharding("sharding");
 std::string const StaticStrings::ShardingStrategy("shardingStrategy");
 std::string const StaticStrings::SmartJoinAttribute("smartJoinAttribute");
 std::string const StaticStrings::SyncByRevision("syncByRevision");
-std::string const StaticStrings::TempObjectId("tempObjectId");
 std::string const StaticStrings::UsesRevisionsAsDocumentIds(
     "usesRevisionsAsDocumentIds");
 std::string const StaticStrings::Schema("schema");
@@ -284,6 +282,12 @@ std::string const StaticStrings::GraphQueryVertices("vertices");
 std::string const StaticStrings::GraphQueryPath("path");
 std::string const StaticStrings::GraphQueryGlobal("global");
 std::string const StaticStrings::GraphQueryNone("none");
+std::string const StaticStrings::GraphQueryWeights("weights");
+std::string const StaticStrings::GraphQueryOrder("order");
+std::string const StaticStrings::GraphQueryOrderBFS("bfs");
+std::string const StaticStrings::GraphQueryOrderDFS("dfs");
+std::string const StaticStrings::GraphQueryOrderWeighted("weighted");
+std::string const StaticStrings::GraphQueryShortestPathType("shortestPathType");
 
 // rest query parameter
 std::string const StaticStrings::GraphDropCollections("dropCollections");
@@ -308,6 +312,7 @@ std::string const StaticStrings::RevisionTreeVersion("version");
 // Generic attribute names
 std::string const StaticStrings::AttrCoordinator("coordinator");
 std::string const StaticStrings::AttrCoordinatorRebootId("coordinatorRebootId");
+std::string const StaticStrings::AttrCoordinatorId("coordinatorId");
 std::string const StaticStrings::AttrIsBuilding("isBuilding");
 
 // misc strings
@@ -326,7 +331,6 @@ std::string const StaticStrings::BackupSearchToDeleteName(
 
 // aql api strings
 std::string const StaticStrings::SerializationFormat("serializationFormat");
-std::string const StaticStrings::AqlRemoteApi("api");
 std::string const StaticStrings::AqlRemoteExecute("execute");
 std::string const StaticStrings::AqlRemoteCallStack("callStack");
 std::string const StaticStrings::AqlRemoteLimit("limit");
@@ -347,6 +351,9 @@ std::string const StaticStrings::AqlCallListDefault("default");
 std::string const StaticStrings::ArangoSearchAnalyzersRevision("analyzersRevision");
 std::string const StaticStrings::ArangoSearchCurrentAnalyzersRevision("current");
 std::string const StaticStrings::ArangoSearchSystemAnalyzersRevision("system");
+
+// aql http headers
+std::string const StaticStrings::AqlShardIdHeader("x-shard-id");
 
 // validation
 std::string const StaticStrings::ValidationLevelNone("none");
@@ -406,9 +413,6 @@ std::string const StaticStrings::ShardsNotReplicated(
 
 std::string const StaticStrings::AgencyCommRequestTimeMs(
     "arangodb_agencycomm_request_time_msec");
-
-std::string const StaticStrings::AqlQueryRuntimeMs(
-    "arangodb_aql_total_query_time_msec");
 
 std::string const StaticStrings::SchedulerQueueLength(
     "arangodb_scheduler_queue_length");

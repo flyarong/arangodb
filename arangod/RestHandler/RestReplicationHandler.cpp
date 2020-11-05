@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -129,7 +129,7 @@ static Result checkPlanLeaderDirect(std::shared_ptr<LogicalCollection> const& co
   std::vector<std::string> agencyPath = {"Plan",
                                          "Collections",
                                          col->vocbase().name(),
-                                         std::to_string(col->planId()),
+                                         std::to_string(col->planId().id()),
                                          "shards",
                                          col->name()};
 
@@ -278,7 +278,7 @@ std::string const RestReplicationHandler::RestoreIndexes = "restore-indexes";
 std::string const RestReplicationHandler::RestoreData = "restore-data";
 std::string const RestReplicationHandler::RestoreView = "restore-view";
 std::string const RestReplicationHandler::Sync = "sync";
-std::string const RestReplicationHandler::MakeSlave = "make-slave";
+std::string const RestReplicationHandler::MakeFollower = "make-follower";
 std::string const RestReplicationHandler::ServerId = "server-id";
 std::string const RestReplicationHandler::ApplierConfig = "applier-config";
 std::string const RestReplicationHandler::ApplierStart = "applier-start";
@@ -498,7 +498,8 @@ RestStatus RestReplicationHandler::execute() {
       }
 
       handleCommandSync();
-    } else if (command == MakeSlave) {
+    } else if (command == MakeFollower ||
+               command == "make-slave" /*deprecated*/) {
       if (type != rest::RequestType::PUT) {
         goto BAD_CALL;
       }
@@ -507,7 +508,7 @@ RestStatus RestReplicationHandler::execute() {
         return RestStatus::DONE;
       }
 
-      handleCommandMakeSlave();
+      handleCommandMakeFollower();
     } else if (command == ServerId) {
       if (type != rest::RequestType::GET) {
         goto BAD_CALL;
@@ -739,10 +740,10 @@ ResultT<std::pair<std::string, bool>> RestReplicationHandler::forwardingTarget()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief was docuBlock JSF_put_api_replication_makeSlave
+/// @brief was docuBlock JSF_put_api_replication_makeFollower
 ////////////////////////////////////////////////////////////////////////////////
 
-void RestReplicationHandler::handleCommandMakeSlave() {
+void RestReplicationHandler::handleCommandMakeFollower() {
   bool isGlobal = false;
   ReplicationApplier* applier = getApplier(isGlobal);
   if (applier == nullptr) {
@@ -853,7 +854,7 @@ void RestReplicationHandler::handleCommandClusterInventory() {
     std::shared_ptr<ShardMap> shardMap = c->shardIds();
     // shardMap is an unordered_map from ShardId (string) to a vector of
     // servers (strings), wrapped in a shared_ptr
-    auto cic = ci.getCollectionCurrent(dbName, basics::StringUtils::itoa(c->id()));
+    auto cic = ci.getCollectionCurrent(dbName, basics::StringUtils::itoa(c->id().id()));
     // Check all shards:
     bool isReady = true;
     bool allInSync = true;
@@ -1726,15 +1727,14 @@ Result RestReplicationHandler::processRestoreDataBatch(transaction::Methods& trx
   }
 
   VPackSlice requestSlice = builder.slice();
-  OperationResult opRes;
+  OperationOptions options(_context);
+  options.silent = false;
+  options.ignoreRevs = true;
+  options.isRestore = true;
+  options.waitForSync = false;
+  options.overwriteMode = OperationOptions::OverwriteMode::Replace;
+  OperationResult opRes(Result(), options);
   try {
-    OperationOptions options;
-    options.silent = false;
-    options.ignoreRevs = true;
-    options.isRestore = true;
-    options.waitForSync = false;
-    options.overwriteMode = OperationOptions::OverwriteMode::Replace;
-    
     double startTime = TRI_microtime();
     opRes = trx.insert(collectionName, requestSlice, options);
     double duration = TRI_microtime() - startTime;
@@ -1800,7 +1800,7 @@ Result RestReplicationHandler::processRestoreDataBatch(transaction::Methods& trx
   }
 
   try {
-    OperationOptions options;
+    OperationOptions options(_context);
     options.silent = true;
     options.ignoreRevs = true;
     options.isRestore = true;
@@ -2236,7 +2236,7 @@ void RestReplicationHandler::handleCommandSync() {
   result.add(VPackValue(VPackValueType::Object));
   result.add("collections", VPackValue(VPackValueType::Array));
   for (auto const& it : syncer->getProcessedCollections()) {
-    std::string const cidString = StringUtils::itoa(it.first);
+    std::string const cidString = StringUtils::itoa(it.first.id());
     // Insert a collection
     result.add(VPackValue(VPackValueType::Object));
     result.add("id", VPackValue(cidString));
@@ -2247,12 +2247,6 @@ void RestReplicationHandler::handleCommandSync() {
 
   auto tickString = std::to_string(syncer->getLastLogTick());
   result.add("lastLogTick", VPackValue(tickString));
-
-  bool const keepBarrier = VelocyPackHelper::getBooleanValue(body, "keepBarrier", false);
-  if (keepBarrier) {
-    auto barrierId = std::to_string(syncer->stealBarrier());
-    result.add("barrierId", VPackValue(barrierId));
-  }
 
   result.close();  // base
   generateResult(rest::ResponseCode::OK, result.slice());
@@ -2335,14 +2329,7 @@ void RestReplicationHandler::handleCommandApplierStart() {
     useTick = true;
   }
 
-  TRI_voc_tick_t barrierId = 0;
-  std::string const& value2 = _request->value("barrierId", found);
-  if (found) {
-    // query parameter "barrierId" specified
-    barrierId = static_cast<TRI_voc_tick_t>(StringUtils::uint64(value2));
-  }
-
-  applier->startTailing(initialTick, useTick, barrierId);
+  applier->startTailing(initialTick, useTick);
   handleCommandApplierGetState();
 }
 
@@ -2469,7 +2456,7 @@ void RestReplicationHandler::handleCommandAddFollower() {
     return;
   }
 
-  const std::string followerId = followerIdSlice.copyString();
+  std::string const followerId = followerIdSlice.copyString();
   LOG_TOPIC("312cc", DEBUG, Logger::REPLICATION)
       << "Attempt to Add Follower: " << followerId << " to shard "
       << col->name() << " in database: " << _vocbase.name();
@@ -2482,13 +2469,14 @@ void RestReplicationHandler::handleCommandAddFollower() {
     auto res = trx.begin();
 
     if (res.ok()) {
-      auto countRes = trx.count(col->name(), transaction::CountType::Normal);
+      OperationOptions options(_context);
+      auto countRes = trx.count(col->name(), transaction::CountType::Normal, options);
 
       if (countRes.ok()) {
         VPackSlice nrSlice = countRes.slice();
         uint64_t nr = nrSlice.getNumber<uint64_t>();
         LOG_TOPIC("533c3", DEBUG, Logger::REPLICATION)
-            << "Compare with shortCut Leader: " << nr
+            << "Compare with shortcut Leader: " << nr
             << " == Follower: " << checksumSlice.copyString();
         if (nr == 0 && checksumSlice.isEqualString("0")) {
           res = col->followers()->add(followerId);
@@ -2549,13 +2537,15 @@ void RestReplicationHandler::handleCommandAddFollower() {
     LOG_TOPIC("94ebe", DEBUG, Logger::REPLICATION)
         << followerId << " is not yet in sync with " << _vocbase.name() << "/"
         << col->name();
-    const std::string checksum = checksumSlice.copyString();
+    std::string const checksum = checksumSlice.copyString();
     LOG_TOPIC("592ef", WARN, Logger::REPLICATION)
-        << "Cannot add follower, mismatching checksums. "
-        << "Expected: " << referenceChecksum.get() << " Actual: " << checksum;
+        << "Cannot add follower " << followerId << " for shard "
+        << _vocbase.name() << "/" << col->name() 
+        << ", mismatching checksums. "
+        << "Expected (leader): " << referenceChecksum.get() << ", actual (follower): " << checksum;
     generateError(rest::ResponseCode::BAD, TRI_ERROR_REPLICATION_WRONG_CHECKSUM,
-                  "'checksum' is wrong. Expected: " + referenceChecksum.get() +
-                      ". Actual: " + checksum);
+                  "'checksum' is wrong. Expected (leader): " + referenceChecksum.get() +
+                      ". actual (follower): " + checksum);
     return;
   }
 
@@ -2933,11 +2923,11 @@ void RestReplicationHandler::handleCommandGetIdForReadLockCollection() {
 ////////////////////////////////////////////////////////////////////////////////
 
 void RestReplicationHandler::handleCommandLoggerState() {
-  StorageEngine* engine = EngineSelectorFeature::ENGINE;
-  TRI_ASSERT(engine);
+  TRI_ASSERT(server().hasFeature<EngineSelectorFeature>());
+  StorageEngine& engine = server().getFeature<EngineSelectorFeature>().engine();
 
   VPackBuilder builder;
-  auto res = engine->createLoggerState(&_vocbase, builder);
+  auto res = engine.createLoggerState(&_vocbase, builder);
 
   if (res.fail()) {
     LOG_TOPIC("c7471", DEBUG, Logger::REPLICATION)
@@ -2957,7 +2947,7 @@ void RestReplicationHandler::handleCommandLoggerState() {
 //////////////////////////////////////////////////////////////////////////////
 void RestReplicationHandler::handleCommandLoggerFirstTick() {
   TRI_voc_tick_t tick = UINT64_MAX;
-  Result res = EngineSelectorFeature::ENGINE->firstTick(tick);
+  Result res = server().getFeature<EngineSelectorFeature>().engine().firstTick(tick);
 
   VPackBuilder b;
   b.add(VPackValue(VPackValueType::Object));
@@ -2982,10 +2972,10 @@ void RestReplicationHandler::handleCommandLoggerFirstTick() {
 //////////////////////////////////////////////////////////////////////////////
 
 void RestReplicationHandler::handleCommandLoggerTickRanges() {
-  StorageEngine* engine = EngineSelectorFeature::ENGINE;
-  TRI_ASSERT(engine);
+  TRI_ASSERT(server().hasFeature<EngineSelectorFeature>());
+  StorageEngine& engine = server().getFeature<EngineSelectorFeature>().engine();
   VPackBuilder b;
-  Result res = engine->createTickRanges(b);
+  Result res = engine.createTickRanges(b);
   if (res.ok()) {
     generateResult(rest::ResponseCode::OK, b.slice());
   } else {
@@ -3392,13 +3382,13 @@ int RestReplicationHandler::createCollection(VPackSlice slice,
   /* Temporary ASSERTS to prove correctness of new constructor */
   TRI_ASSERT(col->system() == (name[0] == '_'));
 #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
-  TRI_voc_cid_t planId = 0;
+  DataSourceId planId = DataSourceId::none();
   VPackSlice const planIdSlice = slice.get("planId");
   if (planIdSlice.isNumber()) {
-    planId = static_cast<TRI_voc_cid_t>(planIdSlice.getNumericValue<uint64_t>());
+    planId = DataSourceId{planIdSlice.getNumericValue<DataSourceId::BaseType>()};
   } else if (planIdSlice.isString()) {
     std::string tmp = planIdSlice.copyString();
-    planId = static_cast<TRI_voc_cid_t>(StringUtils::uint64(tmp));
+    planId = DataSourceId{StringUtils::uint64(tmp)};
   } else if (planIdSlice.isNone()) {
     // There is no plan ID it has to be equal to collection id
     planId = col->id();
@@ -3498,28 +3488,36 @@ Result RestReplicationHandler::createBlockingTransaction(
 
   std::string vn = _vocbase.name();
   try {
-    std::function<void(void)> f = [=]() {
-      try {
-        // Code does not matter, read only access, so we can roll back.
-        transaction::Manager* mgr = transaction::ManagerFeature::manager();
-        if (mgr) {
-          mgr->abortManagedTrx(id);
-        }
-      } catch (...) {
-        // All errors that show up here can only be
-        // triggered if the query is destroyed in between.
-      }
-    };
-
-    std::string comment = std::string("SynchronizeShard from ") + serverId +
-                          " for " + col.name() + " access mode " +
-                          AccessMode::typeString(access);
-    
     if (!serverId.empty()) {
+      std::string comment = std::string("SynchronizeShard from ") + serverId +
+                            " for " + col.name() + " access mode " +
+                            AccessMode::typeString(access);
+    
+      std::function<void(void)> f = [=]() {
+        try {
+          // Code does not matter, read only access, so we can roll back.
+          transaction::Manager* mgr = transaction::ManagerFeature::manager();
+          if (mgr) {
+            mgr->abortManagedTrx(id, vn);
+          }
+        } catch (...) {
+          // All errors that show up here can only be
+          // triggered if the query is destroyed in between.
+        }
+      };
+    
       auto rGuard = std::make_unique<RebootCookie>(
         ci.rebootTracker().callMeOnChange(RebootTracker::PeerState(serverId, rebootId),
-                                          f, comment));
-      transaction::Methods trx{mgr->leaseManagedTrx(id, AccessMode::Type::WRITE)};
+                                          std::move(f), std::move(comment)));
+      auto ctx = mgr->leaseManagedTrx(id, AccessMode::Type::WRITE);
+    
+      if (!ctx) {
+        // Trx does not exist. So we assume it got cancelled.
+        return {TRI_ERROR_TRANSACTION_INTERNAL, "read transaction was cancelled"};
+      }
+
+      transaction::Methods trx{ctx};
+
       void* key = this; // simon: not important to get it again
       trx.state()->cookie(key, std::move(rGuard));
     }
@@ -3531,7 +3529,7 @@ Result RestReplicationHandler::createBlockingTransaction(
 
   if (isTombstoned(id)) {
     try {
-      return mgr->abortManagedTrx(id);
+      return mgr->abortManagedTrx(id, vn);
     } catch (...) {
       // Maybe thrown in shutdown.
     }
@@ -3556,10 +3554,10 @@ ResultT<bool> RestReplicationHandler::isLockHeld(TransactionId id) const {
   transaction::Manager* mgr = transaction::ManagerFeature::manager();
   TRI_ASSERT(mgr != nullptr);
 
-  transaction::Status stats = mgr->getManagedTrxStatus(id);
+  transaction::Status stats = mgr->getManagedTrxStatus(id, _vocbase.name());
   if (stats == transaction::Status::UNDEFINED) {
     return ResultT<bool>::error(TRI_ERROR_HTTP_NOT_FOUND,
-                                "no hold read lock job found for 'id'");
+                                "no hold read lock job found for id " + std::to_string(id.id()));
   }
   
   return ResultT<bool>::success(true);
@@ -3572,7 +3570,7 @@ ResultT<bool> RestReplicationHandler::cancelBlockingTransaction(TransactionId id
   if (res.ok()) {
     transaction::Manager* mgr = transaction::ManagerFeature::manager();
     if (mgr) {
-      auto isAborted = mgr->abortManagedTrx(id);
+      auto isAborted = mgr->abortManagedTrx(id, _vocbase.name());
       if (isAborted.ok()) { // lock was held
         return ResultT<bool>::success(true);
       }

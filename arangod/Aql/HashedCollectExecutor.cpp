@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -178,7 +179,7 @@ void HashedCollectExecutor::writeCurrentGroupToOutput(OutputAqlItemRow& output) 
   if (!_infos.getCount()) {
     TRI_ASSERT(_currentGroup->second->size() == _infos.getAggregatedRegisters().size());
     size_t j = 0;
-    for (auto const& it : *(_currentGroup->second)) {
+    for (std::unique_ptr<Aggregator> const& it : *(_currentGroup->second)) {
       AqlValue r = it->stealValue();
       AqlValueGuard guard{r, true};
       output.moveValueInto(_infos.getAggregatedRegisters()[j++].first,
@@ -250,6 +251,7 @@ auto HashedCollectExecutor::produceRows(AqlItemBlockInputRange& inputRange,
     while (_currentGroup != _allGroups.end() && !output.isFull()) {
       writeCurrentGroupToOutput(output);
       ++_currentGroup;
+      ++_returnedGroups;
       output.advanceRow();
     }
   }
@@ -382,8 +384,8 @@ decltype(HashedCollectExecutor::_allGroups)::iterator HashedCollectExecutor::fin
     return call.getLimit();
   }
   // We know how many groups we have left
-  return std::min<size_t>(call.getLimit(),
-                          std::distance(_currentGroup, _allGroups.end()));
+  TRI_ASSERT(_returnedGroups <= _allGroups.size());
+  return std::min<size_t>(call.getLimit(), _allGroups.size() - _returnedGroups);
 }
 
 const HashedCollectExecutor::Infos& HashedCollectExecutor::infos() const noexcept {

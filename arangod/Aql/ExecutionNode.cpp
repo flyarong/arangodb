@@ -52,6 +52,7 @@
 #include "Aql/MutexNode.h"
 #include "Aql/NoResultsExecutor.h"
 #include "Aql/NodeFinder.h"
+#include "Aql/Projections.h"
 #include "Aql/Query.h"
 #include "Aql/Range.h"
 #include "Aql/RegisterPlan.h"
@@ -64,6 +65,7 @@
 #include "Aql/SubqueryStartExecutionNode.h"
 #include "Aql/TraversalNode.h"
 #include "Aql/WalkerWorker.h"
+#include "Aql/WindowNode.h"
 #include "Basics/VelocyPackHelper.h"
 #include "Basics/system-compiler.h"
 #include "Cluster/ServerState.h"
@@ -123,6 +125,7 @@ std::unordered_map<int, std::string const> const typeNames{
     {static_cast<int>(ExecutionNode::MATERIALIZE), "MaterializeNode"},
     {static_cast<int>(ExecutionNode::ASYNC), "AsyncNode"},
     {static_cast<int>(ExecutionNode::MUTEX), "MutexNode"},
+    {static_cast<int>(ExecutionNode::WINDOW), "WindowNode"},
 };
 }  // namespace
 
@@ -255,7 +258,7 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
                                        "invalid \"groups\" definition");
       }
 
-      std::vector<std::pair<Variable const*, Variable const*>> groupVariables;
+      std::vector<GroupVarInfo> groupVariables;
       {
         groupVariables.reserve(groupsSlice.length());
         for (VPackSlice it : VPackArrayIterator(groupsSlice)) {
@@ -264,7 +267,7 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
           Variable* inVar =
               Variable::varFromVPack(plan->getAst(), it, "inVariable");
 
-          groupVariables.emplace_back(std::make_pair(outVar, inVar));
+          groupVariables.emplace_back(GroupVarInfo{outVar, inVar});
         }
       }
 
@@ -275,7 +278,7 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
                                        "invalid \"aggregates\" definition");
       }
 
-      std::vector<std::pair<Variable const*, std::pair<Variable const*, std::string>>> aggregateVariables;
+      std::vector<AggregateVarInfo> aggregateVariables;
       {
         aggregateVariables.reserve(aggregatesSlice.length());
         for (VPackSlice it : VPackArrayIterator(aggregatesSlice)) {
@@ -285,8 +288,7 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
               Variable::varFromVPack(plan->getAst(), it, "inVariable");
 
           std::string const type = it.get("type").copyString();
-          aggregateVariables.emplace_back(
-              std::make_pair(outVar, std::make_pair(inVar, type)));
+          aggregateVariables.emplace_back(AggregateVarInfo{outVar, inVar, type});
         }
       }
 
@@ -354,6 +356,37 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
       return new AsyncNode(plan, slice);
     case MUTEX:
       return new MutexNode(plan, slice);
+    case WINDOW:{
+      
+      Variable* rangeVar =
+          Variable::varFromVPack(plan->getAst(), slice, "rangeVariable", /*optional*/true);
+
+      // aggregates
+      VPackSlice aggregatesSlice = slice.get("aggregates");
+      if (!aggregatesSlice.isArray()) {
+        THROW_ARANGO_EXCEPTION_MESSAGE(TRI_ERROR_NOT_IMPLEMENTED,
+                                       "invalid \"aggregates\" definition");
+      }
+
+      std::vector<AggregateVarInfo> aggregateVariables;
+      {
+        aggregateVariables.reserve(aggregatesSlice.length());
+        for (VPackSlice it : VPackArrayIterator(aggregatesSlice)) {
+          Variable* outVar =
+              Variable::varFromVPack(plan->getAst(), it, "outVariable");
+          Variable* inVar =
+              Variable::varFromVPack(plan->getAst(), it, "inVariable");
+
+          std::string const type = it.get("type").copyString();
+          aggregateVariables.emplace_back(AggregateVarInfo{outVar, inVar, type});
+        }
+      }
+      
+      auto type = rangeVar != nullptr ? WindowBounds::Type::Range : WindowBounds::Type::Row;
+      WindowBounds bounds(type, slice);
+      return new WindowNode(plan, slice, std::move(bounds),
+                            rangeVar, aggregateVariables);
+    }
     default: {
       // should not reach this point
       TRI_ASSERT(false);
@@ -365,7 +398,7 @@ ExecutionNode* ExecutionNode::fromVPackFactory(ExecutionPlan* plan, VPackSlice c
 /// @brief create an ExecutionNode from VPackSlice
 ExecutionNode::ExecutionNode(ExecutionPlan* plan, VPackSlice const& slice)
     : _id(slice.get("id").getNumericValue<size_t>()),
-      _depth(slice.get("depth").getNumericValue<int>()),
+      _depth(slice.get("depth").getNumericValue<unsigned int>()),
       _varUsageValid(true),
       _isInSplicedSubquery(false),
       _plan(plan) {
@@ -1405,10 +1438,11 @@ bool ExecutionNode::alwaysCopiesRows(NodeType type) {
     case SUBQUERY:
     case SINGLETON:
     case LIMIT:
+    case WINDOW:
       return false;
     // It should be safe to return false for these, but is it necessary?
     // Returning true can lead to more efficient register usage.
-    case REMOTE:
+    case REMOTE: // simon: could probably return true
     case SCATTER:
     case GATHER:
     case ASYNC:
@@ -1538,7 +1572,6 @@ std::unique_ptr<ExecutionBlock> EnumerateCollectionNode::createBlock(
       EnumerateCollectionExecutorInfos(outputRegister, engine.getQuery(), collection(),
                                        _outVariable, produceResult,
                                        this->_filter.get(), this->projections(),
-                                       this->coveringIndexAttributePositions(),
                                        this->_random, this->doCount());
   return std::make_unique<ExecutionBlockImpl<EnumerateCollectionExecutor>>(
       &engine, this, std::move(registerInfos), std::move(executorInfos));
@@ -1556,7 +1589,7 @@ ExecutionNode* EnumerateCollectionNode::clone(ExecutionPlan* plan, bool withDepe
   auto c = std::make_unique<EnumerateCollectionNode>(plan, _id, collection(),
                                                      outVariable, _random, _hint);
 
-  c->projections(_projections);
+  c->_projections = _projections;
   CollectionAccessingNode::cloneInto(*c);
   DocumentProducingNode::cloneInto(plan, *c);
 
@@ -1761,9 +1794,22 @@ void LimitNode::toVelocyPackHelper(VPackBuilder& nodes, unsigned flags,
 CostEstimate LimitNode::estimateCost() const {
   TRI_ASSERT(!_dependencies.empty());
   CostEstimate estimate = _dependencies.at(0)->getCost();
+
+  // arbitrary cost value for skipping a single document
+  // skipping over a document is not fully free, because in the RocksDB
+  // case, we need to move iterarors forward, invoke the comparator etc.
+  double const skipCost = 0.000001;
+
+  size_t estimatedNrItems = estimate.estimatedNrItems;
+  if (estimatedNrItems >= _offset) {
+    estimate.estimatedCost += _offset * skipCost;
+    estimatedNrItems -= _offset;
+  } else {
+    estimate.estimatedCost += estimatedNrItems * skipCost;
+    estimatedNrItems = 0;
+  }
   estimate.estimatedNrItems =
-      (std::min)(_limit, (std::max)(static_cast<size_t>(0),
-                                    estimate.estimatedNrItems - _offset));
+      (std::min)(_limit, estimatedNrItems);
   estimate.estimatedCost += estimate.estimatedNrItems;
   return estimate;
 }
@@ -1949,7 +1995,10 @@ ExecutionNode::NodeType CalculationNode::getType() const { return CALCULATION; }
 
 Variable const* CalculationNode::outVariable() const { return _outVariable; }
 
-Expression* CalculationNode::expression() const { return _expression.get(); }
+Expression* CalculationNode::expression() const { 
+  TRI_ASSERT(_expression != nullptr);
+  return _expression.get(); 
+}
 
 void CalculationNode::getVariablesUsedHere(VarSet& vars) const {
   _expression->variables(vars);

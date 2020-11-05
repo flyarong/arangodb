@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -69,6 +70,7 @@
 #include "Aql/TraversalExecutor.h"
 #include "Aql/UnsortedGatherExecutor.h"
 #include "Aql/UpsertModifier.h"
+#include "Aql/WindowExecutor.h"
 #include "Basics/system-functions.h"
 #include "Transaction/Context.h"
 
@@ -146,10 +148,7 @@ ExecutionBlockImpl<Executor>::ExecutionBlockImpl(ExecutionEngine* engine,
                                                  typename Executor::Infos executorInfos)
     : ExecutionBlock(engine, node),
       _registerInfos(std::move(registerInfos)),
-      _dependencyProxy(_dependencies, engine->itemBlockManager(),
-                       _registerInfos.getInputRegisters(),
-                       _registerInfos.numberOfInputRegisters(),
-                       &engine->getQuery().vpackOptions()),
+      _dependencyProxy(_dependencies, _registerInfos.numberOfInputRegisters()),
       _rowFetcher(_dependencyProxy),
       _executorInfos(std::move(executorInfos)),
       _executor(_rowFetcher, _executorInfos),
@@ -177,9 +176,9 @@ std::unique_ptr<OutputAqlItemRow> ExecutionBlockImpl<Executor>::createOutputRow(
   if (newBlock != nullptr) {
     // Assert that the block has enough registers. This must be guaranteed by
     // the register planning.
-    TRI_ASSERT(newBlock->getNrRegs() == _registerInfos.numberOfOutputRegisters());
+    TRI_ASSERT(newBlock->numRegisters() == _registerInfos.numberOfOutputRegisters());
     // Check that all output registers are empty.
-    size_t const n = newBlock->size();
+    size_t const n = newBlock->numRows();
     auto const& regs = _registerInfos.getOutputRegisters();
     if (!regs.empty()) {
       bool const hasShadowRows = newBlock->hasShadowRows();
@@ -293,13 +292,11 @@ std::pair<ExecutionState, Result> ExecutionBlockImpl<Executor>::initializeCursor
 }
 
 template <class Executor>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<Executor>::shutdown(int errorCode) {
-  return ExecutionBlock::shutdown(errorCode);
-}
-
-template <class Executor>
 std::tuple<ExecutionState, SkipResult, SharedAqlItemBlockPtr>
 ExecutionBlockImpl<Executor>::execute(AqlCallStack stack) {
+  if (getQuery().killed()) {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_QUERY_KILLED);
+  }
   traceExecuteBegin(stack);
   // silence tests -- we need to introduce new failure tests for fetchers
   TRI_IF_FAILURE("ExecutionBlock::getOrSkipSome1") {
@@ -377,96 +374,6 @@ std::pair<ExecutionState, Result> ExecutionBlockImpl<IdExecutor<ConstFetcher>>::
 
   // end of default initializeCursor
   return ExecutionBlock::initializeCursor(input);
-}
-
-// TODO the shutdown specializations shall be unified!
-
-template <>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<TraversalExecutor>::shutdown(int errorCode) {
-  ExecutionState state;
-  Result result;
-
-  std::tie(state, result) = ExecutionBlock::shutdown(errorCode);
-
-  if (state == ExecutionState::WAITING) {
-    return {state, result};
-  }
-  return this->executor().shutdown(errorCode);
-}
-
-template <>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<ShortestPathExecutor>::shutdown(int errorCode) {
-  ExecutionState state;
-  Result result;
-
-  std::tie(state, result) = ExecutionBlock::shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {state, result};
-  }
-  return this->executor().shutdown(errorCode);
-}
-
-template <>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<KShortestPathsExecutor>::shutdown(int errorCode) {
-  ExecutionState state;
-  Result result;
-
-  std::tie(state, result) = ExecutionBlock::shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {state, result};
-  }
-  return this->executor().shutdown(errorCode);
-}
-
-template <>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<SubqueryExecutor<true>>::shutdown(int errorCode) {
-  ExecutionState state;
-  Result subqueryResult;
-  // shutdown is repeatable
-  std::tie(state, subqueryResult) = this->executor().shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {ExecutionState::WAITING, subqueryResult};
-  }
-  Result result;
-
-  std::tie(state, result) = ExecutionBlock::shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {state, result};
-  }
-  if (result.fail()) {
-    return {state, result};
-  }
-  return {state, subqueryResult};
-}
-
-template <>
-std::pair<ExecutionState, Result> ExecutionBlockImpl<SubqueryExecutor<false>>::shutdown(int errorCode) {
-  ExecutionState state;
-  Result subqueryResult;
-  // shutdown is repeatable
-  std::tie(state, subqueryResult) = this->executor().shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {ExecutionState::WAITING, subqueryResult};
-  }
-  Result result;
-
-  std::tie(state, result) = ExecutionBlock::shutdown(errorCode);
-  if (state == ExecutionState::WAITING) {
-    return {state, result};
-  }
-  if (result.fail()) {
-    return {state, result};
-  }
-  return {state, subqueryResult};
-}
-
-template <>
-std::pair<ExecutionState, Result>
-ExecutionBlockImpl<IdExecutor<SingleRowFetcher<BlockPassthrough::Enable>>>::shutdown(int errorCode) {
-  if (this->executorInfos().isResponsibleForInitializeCursor()) {
-    return ExecutionBlock::shutdown(errorCode);
-  }
-  return {ExecutionState::DONE, {errorCode}};
 }
 
 }  // namespace arangodb::aql
@@ -592,7 +499,7 @@ SharedAqlItemBlockPtr ExecutionBlockImpl<Executor>::requestBlock(size_t nrItems,
 //           it produced any output.
 //           With the new architecture we should be able to just skip
 //           ahead on the input range, fetching new blocks when necessary
-// EXECUTOR: the executor has a specialised skipRowsRange method
+// EXECUTOR: the executor has a specialized skipRowsRange method
 //           that will be called to skip
 // SUBQUERY_START:
 // SUBQUERY_END:
@@ -628,9 +535,10 @@ static SkipRowsRangeVariant constexpr skipRowsType() {
   static_assert(
       useExecutor ==
           (is_one_of_v<
-              Executor, FilterExecutor, ShortestPathExecutor, ReturnExecutor, KShortestPathsExecutor, ParallelUnsortedGatherExecutor,
+              Executor, FilterExecutor, ShortestPathExecutor, ReturnExecutor,
+              KShortestPathsExecutor<graph::KPathFinder>, KShortestPathsExecutor<graph::KShortestPathsFinder>, ParallelUnsortedGatherExecutor,
               IdExecutor<SingleRowFetcher<BlockPassthrough::Enable>>, IdExecutor<ConstFetcher>,
-              HashedCollectExecutor, IndexExecutor, EnumerateCollectionExecutor, DistinctCollectExecutor,
+              HashedCollectExecutor, AccuWindowExecutor, WindowExecutor, IndexExecutor, EnumerateCollectionExecutor, DistinctCollectExecutor,
               ConstrainedSortExecutor, CountCollectExecutor, SubqueryExecutor<true>,
 #ifdef ARANGODB_USE_GOOGLE_TESTS
               TestLambdaSkipExecutor,
@@ -1924,6 +1832,8 @@ template class ::arangodb::aql::ExecutionBlockImpl<EnumerateCollectionExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<EnumerateListExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<FilterExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<HashedCollectExecutor>;
+template class ::arangodb::aql::ExecutionBlockImpl<AccuWindowExecutor>;
+template class ::arangodb::aql::ExecutionBlockImpl<WindowExecutor>;
 
 template class ::arangodb::aql::ExecutionBlockImpl<IResearchViewExecutor<false, arangodb::iresearch::MaterializeType::NotMaterialize>>;
 template class ::arangodb::aql::ExecutionBlockImpl<IResearchViewExecutor<false, arangodb::iresearch::MaterializeType::LateMaterialize>>;
@@ -1970,7 +1880,8 @@ template class ::arangodb::aql::ExecutionBlockImpl<SingleRemoteModificationExecu
 template class ::arangodb::aql::ExecutionBlockImpl<NoResultsExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<ReturnExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<ShortestPathExecutor>;
-template class ::arangodb::aql::ExecutionBlockImpl<KShortestPathsExecutor>;
+template class ::arangodb::aql::ExecutionBlockImpl<KShortestPathsExecutor<arangodb::graph::KShortestPathsFinder>>;
+template class ::arangodb::aql::ExecutionBlockImpl<KShortestPathsExecutor<arangodb::graph::KPathFinder>>;
 template class ::arangodb::aql::ExecutionBlockImpl<SortedCollectExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<SortExecutor>;
 template class ::arangodb::aql::ExecutionBlockImpl<SubqueryEndExecutor>;

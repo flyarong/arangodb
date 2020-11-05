@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -38,6 +39,7 @@
 #include "ApplicationFeatures/ApplicationServer.h"
 #include "Basics/StaticStrings.h"
 #include "Basics/StringUtils.h"
+#include "Cluster/ClusterMethods.h"
 #include "Logger/LogMacros.h"
 #include "Logger/Logger.h"
 #include "RestServer/DatabaseFeature.h"
@@ -62,30 +64,14 @@ arangodb::Result canUseAnalyzers( // validate
   arangodb::iresearch::IResearchLinkMeta const& meta, // metadata
   TRI_vocbase_t const& defaultVocbase // default vocbase
 ) {
-  auto& server = defaultVocbase.server();
-  auto sysVocbase = server.hasFeature<arangodb::SystemDatabaseFeature>()
-                        ? server.getFeature<arangodb::SystemDatabaseFeature>().use()
-                        : nullptr;
-
   for (auto& pool: meta._analyzerDefinitions) {
     if (!pool) {
       continue; // skip invalid entries
     }
 
-    bool result;
-
-    if (sysVocbase) {
-      result = arangodb::iresearch::IResearchAnalyzerFeature::canUse( // validate
-        arangodb::iresearch::IResearchAnalyzerFeature::normalize( // normalize
-          pool->name(), defaultVocbase, *sysVocbase // args
-        ), // analyzer
-        arangodb::auth::Level::RO // auth level
-      );
-    } else {
-      result = arangodb::iresearch::IResearchAnalyzerFeature::canUse( // validate
-        pool->name(), arangodb::auth::Level::RO // args
-      );
-    }
+    auto result = arangodb::iresearch::IResearchAnalyzerFeature::canUse(
+        arangodb::iresearch::IResearchAnalyzerFeature::normalize(pool->name(), defaultVocbase.name()),
+        arangodb::auth::Level::RO);
 
     if (!result) {
       return {
@@ -139,7 +125,6 @@ arangodb::Result createLink( // create link
         }
       }
     }
-
   } catch (arangodb::basics::Exception const& e) {
     return arangodb::Result(e.code(), e.what());
   }
@@ -152,9 +137,17 @@ arangodb::Result createLink( // create link
     arangodb::iresearch::IResearchViewCoordinator const& view, // link view
     arangodb::velocypack::Slice definition // link definition
 ) {
+  if (arangodb::ClusterMethods::filterHiddenCollections(collection)) {
+    // Enterprise variant, we only need to create links on non-hidden
+    // collections (e.g. in SmartGraph Case)
+    // The hidden collections are managed by the logic around the SmartEdgeCollection
+    // and do not allow to have their own modifications.
+    return TRI_ERROR_NO_ERROR;
+  }
   static const std::function<bool(irs::string_ref const& key)> acceptor = [](
       irs::string_ref const& key // json key
   )->bool {
+
     // ignored fields
     return key != arangodb::StaticStrings::IndexType // type field
         && key != arangodb::iresearch::StaticStrings::ViewIdField; // view id field
@@ -192,6 +185,7 @@ arangodb::Result dropLink( // drop link
     arangodb::LogicalCollection& collection, // link collection
     arangodb::iresearch::IResearchLink const& link // link to drop
 ) {
+
   // don't need to create an extra transaction inside arangodb::methods::Indexes::drop(...)
   if (!collection.dropIndex(link.id())) {
     return arangodb::Result(  // result
@@ -203,13 +197,21 @@ arangodb::Result dropLink( // drop link
   return arangodb::Result();
 }
 
-template<>
-arangodb::Result dropLink<arangodb::iresearch::IResearchViewCoordinator>( // drop link
-    arangodb::LogicalCollection& collection, // link collection
-    arangodb::iresearch::IResearchLink const& link // link to drop
+template <>
+arangodb::Result dropLink<arangodb::iresearch::IResearchViewCoordinator>(  // drop link
+    arangodb::LogicalCollection& collection,        // link collection
+    arangodb::iresearch::IResearchLink const& link  // link to drop
 ) {
-  arangodb::velocypack::Builder builder;
 
+  if (arangodb::ClusterMethods::filterHiddenCollections(collection)) {
+    // Enterprise variant, we only need to drop links on non-hidden
+    // collections (e.g. in SmartGraph Case)
+    // The hidden collections are managed by the logic around the SmartEdgeCollection
+    // and do not allow to have their own modifications.
+    return arangodb::Result();
+  }
+
+  arangodb::velocypack::Builder builder;
   builder.openObject();
   builder.add(                                     // add
       arangodb::StaticStrings::IndexId,            // key
@@ -221,11 +223,11 @@ arangodb::Result dropLink<arangodb::iresearch::IResearchViewCoordinator>( // dro
 }
 
 template <typename ViewType>
-arangodb::Result modifyLinks( // modify links
-    std::unordered_set<TRI_voc_cid_t>& modified, // modified collection ids
-    ViewType& view, // modified view
-    arangodb::velocypack::Slice const& links, // modified link definitions
-    std::unordered_set<TRI_voc_cid_t> const& stale = {} // stale links
+arangodb::Result modifyLinks(                              // modify links
+    std::unordered_set<arangodb::DataSourceId>& modified,  // modified collection ids
+    ViewType& view,                                        // modified view
+    arangodb::velocypack::Slice const& links,  // modified link definitions
+    std::unordered_set<arangodb::DataSourceId> const& stale = {}  // stale links
 ) {
   LOG_TOPIC("4bdd2", DEBUG, arangodb::iresearch::TOPIC)
       << "link modification request for view '" << view.name() << "', original definition:" << links.toString();
@@ -330,7 +332,7 @@ arangodb::Result modifyLinks( // modify links
     arangodb::iresearch::IResearchLinkMeta linkMeta;
 
     if (!linkMeta.init(view.vocbase().server(),
-                       namedJson.slice(), true, error, &view.vocbase())) {  // validated and normalized with 'isCreation=true' above via normalize(...)
+                       namedJson.slice(), true, error, view.vocbase().name())) {  // validated and normalized with 'isCreation=true' above via normalize(...)
       return arangodb::Result(
         TRI_ERROR_BAD_PARAMETER,
         std::string("error parsing link parameters from json for arangosearch view '") + view.name() + "' collection '" + collectionName + "' error '" + error + "'"
@@ -356,7 +358,7 @@ arangodb::Result modifyLinks( // modify links
 
     linkModifications.emplace_back(collectionsToLock.size());
     linkModifications.back()._stale = true;
-    collectionsToLock.emplace_back(std::to_string(id));
+    collectionsToLock.emplace_back(std::to_string(id.id()));
   }
 
   if (collectionsToLock.empty()) {
@@ -366,8 +368,8 @@ arangodb::Result modifyLinks( // modify links
   arangodb::ExecContextSuperuserScope scope; // required to remove links from non-RW collections
 
   {
-    std::unordered_set<TRI_voc_cid_t> collectionsToRemove; // track removal for potential reindex
-    std::unordered_set<TRI_voc_cid_t> collectionsToUpdate; // track reindex requests
+    std::unordered_set<arangodb::DataSourceId> collectionsToRemove;  // track removal for potential reindex
+    std::unordered_set<arangodb::DataSourceId> collectionsToUpdate;  // track reindex requests
 
     // resolve corresponding collection and link
     for (auto itr = linkModifications.begin(); itr != linkModifications.end();) {
@@ -582,7 +584,8 @@ namespace iresearch {
 /*static*/ bool IResearchLinkHelper::equal(  // are link definitions equal
     arangodb::application_features::ApplicationServer& server,
     arangodb::velocypack::Slice const& lhs,  // left hand side
-    arangodb::velocypack::Slice const& rhs   // right hand side
+    arangodb::velocypack::Slice const& rhs,   // right hand side
+    irs::string_ref const& dbname
 ) {
   if (!lhs.isObject() || !rhs.isObject()) {
     return false;
@@ -615,8 +618,8 @@ namespace iresearch {
   IResearchLinkMeta lhsMeta;
   IResearchLinkMeta rhsMeta;
 
-  return lhsMeta.init(server, lhs, true, errorField)  // left side meta valid (for db-server analyzer validation should have already apssed on coordinator)
-         && rhsMeta.init(server, rhs, true, errorField)  // right side meta valid (for db-server analyzer validation should have already apssed on coordinator)
+  return lhsMeta.init(server, lhs, true, errorField, dbname)  // left side meta valid (for db-server analyzer validation should have already passed on coordinator)
+         && rhsMeta.init(server, rhs, true, errorField, dbname)  // right side meta valid (for db-server analyzer validation should have already passed on coordinator)
          && lhsMeta == rhsMeta;  // left meta equal right meta
 }
 
@@ -686,7 +689,7 @@ namespace iresearch {
   //        IResearchLinkHelper::normalize(...) if creating via collection API
   //        ::modifyLinks(...) (via call to normalize(...) prior to getting
   //        superuser) if creating via IResearchLinkHelper API
-  if (!meta.init(vocbase.server(), definition, true, error, &vocbase)) {
+  if (!meta.init(vocbase.server(), definition, true, error, vocbase.name())) {
     return arangodb::Result(
       TRI_ERROR_BAD_PARAMETER,
       std::string("error parsing arangosearch link parameters from json: ") + error
@@ -809,7 +812,7 @@ namespace iresearch {
     std::string errorField;
 
     if (!linkDefinition.isNull()) { // have link definition
-      if (!meta.init(vocbase.server(), linkDefinition, true, errorField, &vocbase)) { // for db-server analyzer validation should have already applied on coordinator
+      if (!meta.init(vocbase.server(), linkDefinition, true, errorField, vocbase.name())) { // for db-server analyzer validation should have already applied on coordinator
         return arangodb::Result( // result
           TRI_ERROR_BAD_PARAMETER, // code
           errorField.empty()
@@ -869,10 +872,8 @@ namespace iresearch {
 }
 
 /*static*/ arangodb::Result IResearchLinkHelper::updateLinks(
-    std::unordered_set<TRI_voc_cid_t>& modified,
-    arangodb::LogicalView& view,
-    arangodb::velocypack::Slice const& links,
-    std::unordered_set<TRI_voc_cid_t> const& stale /*= {}*/
+    std::unordered_set<DataSourceId>& modified, arangodb::LogicalView& view,
+    arangodb::velocypack::Slice const& links, std::unordered_set<DataSourceId> const& stale /*= {}*/
 ) {
   LOG_TOPIC("00bf9", TRACE, arangodb::iresearch::TOPIC)
       << "beginning IResearchLinkHelper::updateLinks";

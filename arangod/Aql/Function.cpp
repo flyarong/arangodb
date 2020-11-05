@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,7 +41,7 @@ Function::Function(std::string const& name, char const* arguments,
 
   // almost all AQL functions have a cxx implementation
   // only function V8() plus the ArangoSearch functions do not
-  LOG_TOPIC("c70f6", TRACE, Logger::FIXME)
+  LOG_TOPIC("c70f6", TRACE, Logger::AQL)
       << "registered AQL function '" << name
       << "'. cacheable: " << hasFlag(Flags::Cacheable)
       << ", deterministic: " << hasFlag(Flags::Deterministic)
@@ -49,6 +49,17 @@ Function::Function(std::string const& name, char const* arguments,
       << ", hasCxxImplementation: " << (implementation != nullptr)
       << ", hasConversions: " << !conversions.empty();
 }
+
+#ifdef ARANGODB_USE_GOOGLE_TESTS
+// constructor to create a function stub. only used from tests
+Function::Function(std::string const& name, FunctionImplementation implementation) 
+    : name(name), 
+      arguments("."),
+      flags(makeFlags()), 
+      implementation(implementation) {
+  initializeArguments();
+}
+#endif
 
 /// @brief parse the argument list and set the minimum and maximum number of
 /// arguments

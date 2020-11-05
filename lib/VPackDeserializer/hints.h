@@ -1,8 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
-///
 /// DISCLAIMER
 ///
-/// Copyright 2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 /// Copyright holder is ArangoDB GmbH, Cologne, Germany
 ///
 /// @author Lars Maier
-///
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef DESERIALIZER_HINTS_H
 #define DESERIALIZER_HINTS_H
@@ -60,6 +59,7 @@ struct empty_hint {
 
 struct is_object : public empty_hint {};
 struct is_string : public empty_hint {};
+struct ignore_unknown : public empty_hint {};
 
 template <typename, typename>
 struct hint_list_contains;
@@ -76,6 +76,9 @@ template <typename H>
 constexpr const bool hint_is_object = hint_list_contains_v<is_object, H>;
 template <typename H>
 constexpr const bool hint_is_string = hint_list_contains_v<is_string, H>;
+
+template <typename H>
+constexpr const bool hint_has_ignore_unknown = hint_list_contains_v<ignore_unknown, H>;
 
 template <const char N[], typename H>
 constexpr const bool hint_has_key = hint_list_contains_v<has_field<N>, H>;

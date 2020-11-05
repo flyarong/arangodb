@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -54,7 +54,9 @@ QueryProfile::~QueryProfile() {
 void QueryProfile::registerInQueryList() {
   TRI_ASSERT(!_tracked);
   auto queryList = _query->vocbase().queryList();
-  _tracked = queryList->insert(_query);
+  if (queryList) {
+    _tracked = queryList->insert(_query);
+  }
 }
 
 void QueryProfile::unregisterFromQueryList() noexcept {

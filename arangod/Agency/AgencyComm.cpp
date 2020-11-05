@@ -1,7 +1,7 @@
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,9 +31,6 @@
 
 #include <memory>
 #include <thread>
-#ifdef DEBUG_SYNC_REPLICATION
-#include <atomic>
-#endif
 
 #include <velocypack/Iterator.h>
 #include <velocypack/velocypack-aliases.h>
@@ -56,9 +53,6 @@
 #include "Random/RandomGenerator.h"
 #include "Rest/GeneralRequest.h"
 #include "RestServer/MetricsFeature.h"
-#include "SimpleHttpClient/GeneralClientConnection.h"
-#include "SimpleHttpClient/SimpleHttpClient.h"
-#include "SimpleHttpClient/SimpleHttpResult.h"
 
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -66,13 +60,7 @@
 
 using namespace arangodb;
 using namespace arangodb::application_features;
-using namespace arangodb::httpclient;
 using namespace arangodb::rest;
-
-#ifdef DEBUG_SYNC_REPLICATION
-static std::atomic<uint64_t> debugUniqId(1);
-bool AgencyComm::syncReplDebug = false;
-#endif
 
 static void addEmptyVPackObject(std::string const& name, VPackBuilder& builder) {
   builder.add(name, VPackSlice::emptyObjectSlice());
@@ -442,26 +430,27 @@ std::string AgencyCommResult::errorMessage() const {
   return asResult().errorMessage();
 }
 
-std::optional<std::pair<int, std::string_view>> AgencyCommResult::parseBodyError() const {
-  auto result = std::optional<std::pair<int, std::string_view>>{};
-  try {
-    if (_vpack != nullptr) {
-      auto const body = _vpack->slice();
-      if (body.isObject()) {
-        // get "errorCode" attribute
+std::pair<std::optional<int>, std::optional<std::string_view>> AgencyCommResult::parseBodyError() const {
+  auto result = std::pair<std::optional<int>, std::optional<std::string_view>>{};
+
+  if (_vpack != nullptr) {
+    auto const body = _vpack->slice();
+    if (body.isObject()) {
+      // Try to extract the "errorCode" attribute.
+      try {
         auto const errorCode = body.get(StaticStrings::ErrorCode).getNumber<int>();
         // Save error code if possible, set default error message first
-        result = std::make_pair(errorCode, std::string_view(TRI_errno_string(errorCode)));
-        // Now try to extract the message, too; but it's fine if that fails, we
-        // already have the default one.
-        if (auto const errMsg = body.get(StaticStrings::ErrorMessage); errMsg.isString()) {
-          result->second = errMsg.stringView();
-        } else if (auto const errMsg = body.get("message"); errMsg.isString()) {
-          result->second = errMsg.stringView();
-        }
+        result.first = errorCode;
+      } catch (VPackException const&) {
+      }
+
+      // Now try to extract the message.
+      if (auto const errMsg = body.get(StaticStrings::ErrorMessage); errMsg.isString()) {
+        result.second = errMsg.stringView();
+      } else if (auto const errMsg = body.get("message"); errMsg.isString()) {
+        result.second = errMsg.stringView();
       }
     }
-  } catch (VPackException const&) {
   }
 
   return result;
@@ -488,18 +477,30 @@ std::string AgencyCommResult::body() const {
 Result AgencyCommResult::asResult() const {
   if (successful()) {
     return Result{};
-  } else if (auto const err = parseBodyError(); err.has_value()) {
-    return Result{err->first, std::string{err->second}};
-  } else if (_statusCode > 0) {
-    if (!_message.empty()) {
-      return Result{_statusCode, _message};
-    } else if (!_connected) {
-      return Result{_statusCode, "unable to connect to agency"};
-    } else {
-      return Result{_statusCode};
-    }
   } else {
-    return Result{TRI_ERROR_INTERNAL};
+    auto const err = parseBodyError();
+    auto const errorCode = std::invoke([&]() -> int {
+      if (err.first) {
+        return *err.first;
+      } else if (_statusCode > 0) {
+        return _statusCode;
+      } else {
+        return TRI_ERROR_INTERNAL;
+      }
+    });
+    auto const errorMessage = std::invoke([&]() -> std::string_view {
+      if (err.second) {
+        return *err.second;
+      } else if (!_message.empty()) {
+        return _message;
+      } else if (!_connected) {
+        return "unable to connect to agency";
+      } else {
+        return TRI_errno_string(errorCode);
+      }
+    });
+
+    return Result(errorCode, errorMessage);
   }
 }
 
@@ -842,11 +843,6 @@ AgencyCommResult AgencyComm::casValue(std::string const& key, VPackSlice const& 
 }
 
 uint64_t AgencyComm::uniqid(uint64_t count, double timeout) {
-#ifdef DEBUG_SYNC_REPLICATION
-  if (AgencyComm::syncReplDebug == true) {
-    return debugUniqId++;
-  }
-#endif
   AgencyCommResult readResult;
   AgencyCommResult writeResult;
 

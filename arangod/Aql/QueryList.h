@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -44,16 +44,21 @@ namespace aql {
 class Query;
 
 struct QueryEntryCopy {
-  QueryEntryCopy(TRI_voc_tick_t id, std::string&& queryString,
+  QueryEntryCopy(TRI_voc_tick_t id, std::string const& database,
+                 std::string const& user, std::string&& queryString,
                  std::shared_ptr<arangodb::velocypack::Builder> const& bindParameters,
+                 std::vector<std::string> dataSources,
                  double started, double runTime,
                  QueryExecutionState::ValueType state, bool stream);
   
   void toVelocyPack(arangodb::velocypack::Builder& out) const;
 
   TRI_voc_tick_t const id;
+  std::string const database;
+  std::string const user;
   std::string const queryString;
   std::shared_ptr<arangodb::velocypack::Builder> const bindParameters;
+  std::vector<std::string> dataSources;
   double const started;
   double const runTime;
   QueryExecutionState::ValueType const state;
@@ -93,6 +98,16 @@ class QueryList {
   /// we're not using a lock here for performance reasons - thus concurrent
   /// modifications of this variable are possible but are considered unharmful
   inline void trackSlowQueries(bool value) { _trackSlowQueries.store(value); }
+
+  /// @brief whether to track the full query string
+  inline bool trackQueryString() const {
+    return _trackQueryString.load(std::memory_order_relaxed);
+  }
+
+  /// @brief toggle slow query tracking
+  /// we're not using a lock here for performance reasons - thus concurrent
+  /// modifications of this variable are possible but are considered unharmful
+  inline void trackQueryString(bool value) { _trackQueryString.store(value); }
 
   /// @brief whether or not bind vars are tracked with queries
   /// we're not using a lock here for performance reasons - thus concurrent
@@ -215,6 +230,9 @@ class QueryList {
   static constexpr size_t defaultMaxQueryStringLength = 4096;
 
  private:
+  /// @brief query registry, for keeping track of slow queries counter
+  QueryRegistryFeature& _queryRegistryFeature;
+
   /// @brief r/w lock for the list
   arangodb::basics::ReadWriteLock _lock;
 
@@ -230,8 +248,14 @@ class QueryList {
   /// @brief whether or not slow queries are tracked
   std::atomic<bool> _trackSlowQueries;
 
+  /// @brief whether or not the query string is tracked
+  std::atomic<bool> _trackQueryString;
+
   /// @brief whether or not bind vars are also tracked with queries
   std::atomic<bool> _trackBindVars;
+  
+  /// @brief whether or not data source names are also tracked with queries
+  std::atomic<bool> _trackDataSources;
 
   /// @brief threshold for slow queries (in seconds)
   std::atomic<double> _slowQueryThreshold;

@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2017 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +36,7 @@
 #include "Transaction/Status.h"
 #include "Utils/OperationResult.h"
 #include "VocBase/AccessMode.h"
+#include "VocBase/Identifiers/DataSourceId.h"
 #include "VocBase/Identifiers/RevisionId.h"
 #include "VocBase/voc-types.h"
 #include "VocBase/vocbase.h"
@@ -66,23 +67,15 @@ class SortCondition;
 struct Variable;
 }  // namespace aql
 
-namespace rest {
-enum class ResponseCode;
-}
-
-namespace traverser {
-class BaseEngine;
-}
-
 namespace transaction {
 class Context;
 struct Options;
 }  // namespace transaction
 
 /// @brief forward declarations
-class ClusterFeature;
 class CollectionNameResolver;
 class Index;
+class IndexIterator;
 class LocalDocumentId;
 class ManagedDocumentResult;
 struct IndexIteratorOptions;
@@ -194,7 +187,7 @@ class Methods {
   }
   
   /// @brief options used, not dump options
-  velocypack::Options const& vpackOptions() const;
+  TEST_VIRTUAL velocypack::Options const& vpackOptions() const;
 
   /// @brief begin the transaction
   Result begin();
@@ -219,7 +212,7 @@ class Methods {
   TransactionId tid() const;
 
   /// @brief return a collection name
-  std::string name(TRI_voc_cid_t cid) const;
+  std::string name(DataSourceId cid) const;
 
   /// @brief extract the _id attribute from a slice,
   /// and convert it into a string
@@ -228,15 +221,16 @@ class Methods {
   /// @brief read many documents, using skip and limit in arbitrary order
   /// The result guarantees that all documents are contained exactly once
   /// as long as the collection is not modified.
-  ENTERPRISE_VIRT OperationResult any(std::string const& collectionName);
+  ENTERPRISE_VIRT OperationResult any(std::string const& collectionName,
+                                      OperationOptions const& options);
 
   /// @brief add a collection to the transaction for read, at runtime
-  TRI_voc_cid_t addCollectionAtRuntime(TRI_voc_cid_t cid, std::string const& collectionName,
-                                       AccessMode::Type type);
+  DataSourceId addCollectionAtRuntime(DataSourceId cid, std::string const& collectionName,
+                                      AccessMode::Type type);
 
   /// @brief add a collection to the transaction for read, at runtime
-  virtual TRI_voc_cid_t addCollectionAtRuntime(std::string const& collectionName,
-                                               AccessMode::Type type);
+  virtual DataSourceId addCollectionAtRuntime(std::string const& collectionName,
+                                              AccessMode::Type type);
 
   /// @brief return the type of a collection
   bool isEdgeCollection(std::string const& collectionName) const;
@@ -342,13 +336,15 @@ class Methods {
                                         OperationOptions const& options);
 
   /// deprecated, use async variant
-  virtual OperationResult count(std::string const& collectionName, CountType type) {
-    return countAsync(collectionName, type).get();
+  virtual OperationResult count(std::string const& collectionName,
+                                CountType type, OperationOptions const& options) {
+    return countAsync(collectionName, type, options).get();
   }
 
   /// @brief count the number of documents in a collection
   virtual futures::Future<OperationResult> countAsync(std::string const& collectionName,
-                                                      CountType type);
+                                                      CountType type,
+                                                      OperationOptions const& options);
 
   /// @brief factory for IndexIterator objects from AQL
   /// note: the caller must have read-locked the underlying collection when
@@ -368,8 +364,8 @@ class Methods {
   ENTERPRISE_VIRT bool isLocked(arangodb::LogicalCollection*, AccessMode::Type) const;
   
   /// @brief fetch the LogicalCollection by CID
-  arangodb::LogicalCollection* documentCollection(TRI_voc_cid_t cid) const;
-  
+  arangodb::LogicalCollection* documentCollection(DataSourceId cid) const;
+
   /// @brief fetch the LogicalCollection by name
   arangodb::LogicalCollection* documentCollection(std::string const& name) const;
   
@@ -380,15 +376,13 @@ class Methods {
   bool skipInaccessible() const {
     return false;
   }
-  bool isInaccessibleCollection(TRI_voc_cid_t /*cid*/) const {
-    return false;
-  }
+  bool isInaccessibleCollection(DataSourceId /*cid*/) const { return false; }
   bool isInaccessibleCollection(std::string const& /*cname*/) const {
     return false;
   }
 #else
   bool skipInaccessible() const;
-  bool isInaccessibleCollection(TRI_voc_cid_t /*cid*/) const;
+  bool isInaccessibleCollection(DataSourceId /*cid*/) const;
   bool isInaccessibleCollection(std::string const& /*cname*/) const;
 #endif
 
@@ -402,7 +396,7 @@ class Methods {
 
   // SHOULD THE OPTIONS BE CONST?
   void buildDocumentIdentity(arangodb::LogicalCollection* collection,
-                             velocypack::Builder& builder, TRI_voc_cid_t cid,
+                             velocypack::Builder& builder, DataSourceId cid,
                              arangodb::velocypack::StringRef const& key, RevisionId rid,
                              RevisionId oldRid, ManagedDocumentResult const* oldDoc,
                              ManagedDocumentResult const* newDoc);
@@ -445,9 +439,10 @@ class Methods {
   OperationResult allLocal(std::string const& collectionName, uint64_t skip,
                            uint64_t limit, OperationOptions& options);
 
-  OperationResult anyCoordinator(std::string const& collectionName);
+  OperationResult anyCoordinator(std::string const& collectionName,
+                                 OperationOptions const& options);
 
-  OperationResult anyLocal(std::string const& collectionName);
+  OperationResult anyLocal(std::string const& collectionName, OperationOptions const& options);
 
   Future<OperationResult> truncateCoordinator(std::string const& collectionName,
                                               OperationOptions& options);
@@ -457,23 +452,25 @@ class Methods {
 
  protected:
   /// @brief return the transaction collection for a document collection
-  TransactionCollection* trxCollection(
-      TRI_voc_cid_t cid, AccessMode::Type type = AccessMode::Type::READ) const;
-  
+  TransactionCollection* trxCollection(DataSourceId cid,
+                                       AccessMode::Type type = AccessMode::Type::READ) const;
+
   TransactionCollection* trxCollection(
       std::string const& name, AccessMode::Type type = AccessMode::Type::READ) const;
 
   futures::Future<OperationResult> countCoordinator(std::string const& collectionName,
-                                                    CountType type);
+                                                    CountType type,
+                                                    OperationOptions const& options);
 
   futures::Future<OperationResult> countCoordinatorHelper(
-      std::shared_ptr<LogicalCollection> const& collinfo,
-      std::string const& collectionName, CountType type);
+      std::shared_ptr<LogicalCollection> const& collinfo, std::string const& collectionName,
+      CountType type, OperationOptions const& options);
 
-  OperationResult countLocal(std::string const& collectionName, CountType type);
+  OperationResult countLocal(std::string const& collectionName, CountType type,
+                             OperationOptions const& options);
 
   /// @brief add a collection by id, with the name supplied
-  Result addCollection(TRI_voc_cid_t, std::string const&, AccessMode::Type);
+  Result addCollection(DataSourceId, std::string const&, AccessMode::Type);
 
   /// @brief add a collection by name
   Result addCollection(std::string const&, AccessMode::Type);
@@ -501,7 +498,7 @@ class Methods {
 
   /// @brief name-to-cid lookup cache for last collection seen
   struct {
-    TRI_voc_cid_t cid = 0;
+    DataSourceId cid = DataSourceId::none();
     std::string name;
   } _collectionCache;
 };

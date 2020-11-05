@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -76,6 +76,7 @@ class Endpoint {
   virtual bool isConnected() const { return _connected; }
   virtual bool setSocketFlags(TRI_socket_t);
   virtual DomainType domainType() const { return _domainType; }
+  virtual bool isBroadcastBind() const { return false; }
 
   virtual int domain() const = 0;
   virtual int port() const = 0;

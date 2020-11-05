@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -42,7 +43,7 @@
 #include "Rest/Version.h"
 #include "RestServer/DatabaseFeature.h"
 #include "RestServer/SystemDatabaseFeature.h"
-#include "V8Server/FoxxQueuesFeature.h"
+#include "V8Server/FoxxFeature.h"
 #include "V8Server/V8DealerFeature.h"
 #include "VocBase/Methods/Upgrade.h"
 
@@ -70,7 +71,7 @@ BootstrapFeature::BootstrapFeature(application_features::ApplicationServer& serv
   startsAfter<SystemDatabaseFeature>();
 
   // TODO: It is only in FoxxPhase because of:
-  startsAfter<FoxxQueuesFeature>();
+  startsAfter<FoxxFeature>();
 
   // If this is Sorted out we can go down to ServerPhase
   // And activate the following dependencies:

@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2017 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -49,6 +50,10 @@ constexpr double kMaxRadiansBetweenPoints = kPi + kRadEps;
 // Volumetric mean radius
 constexpr double kEarthRadiusInMeters = (6371.000 * 1000);
 constexpr double kMaxDistanceBetweenPoints = kMaxRadiansBetweenPoints * kEarthRadiusInMeters;
+
+constexpr double metersToRadians(double distanceInMeters) noexcept {
+  return std::max(0.0, std::min(distanceInMeters/ kEarthRadiusInMeters, M_PI));
+}
 
 enum class FilterType {
   // no filter, only useful on a near query

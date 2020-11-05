@@ -1,9 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief Library to build up VPack documents.
-///
 /// DISCLAIMER
 ///
-/// Copyright 2015 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -21,7 +20,6 @@
 ///
 /// @author Max Neunhoeffer
 /// @author Jan Steemann
-/// @author Copyright 2015, ArangoDB GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
 #ifndef VELOCYPACK_EXCEPTION_H
@@ -77,19 +75,22 @@ class Exception : public virtual std::exception {
   };
 
  private:
-  ExceptionType const _type;
+  ExceptionType _type;
   char const* _msg;
 
  public:
-  Exception(ExceptionType type, char const* msg) : _type(type), _msg(msg) {}
+  Exception(ExceptionType type, char const* msg) noexcept;
 
-  explicit Exception(ExceptionType type) : Exception(type, message(type)) {}
+  explicit Exception(ExceptionType type) noexcept : Exception(type, message(type)) {}
   
-  Exception(Exception const& other) : _type(other._type), _msg(other._msg) {}
+  Exception(Exception const& other) = default;
+  Exception(Exception&& other) noexcept = default;
+  Exception& operator=(Exception const& other) = default;
+  Exception& operator=(Exception&& other) noexcept = default;
   
   ~Exception() = default;
 
-  char const* what() const noexcept { return _msg; }
+  char const* what() const noexcept override { return _msg; }
 
   ExceptionType errorCode() const noexcept { return _type; }
 

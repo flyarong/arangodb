@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -118,6 +118,11 @@ std::shared_ptr<fu::Connection> V8ClientConnection::createConnection() {
   try {
     auto res = newConnection->sendRequest(std::move(req));
 
+    if (!res) {
+      setCustomError(500, "unable to create connection");
+      return nullptr;
+    }
+
     _lastHttpReturnCode = res->statusCode();
 
     std::shared_ptr<VPackBuilder> parsedBody;
@@ -210,8 +215,7 @@ std::shared_ptr<fu::Connection> V8ClientConnection::acquireConnection() {
   _lastHttpReturnCode = 0;
 
   if (!_connection ||
-      (_connection->state() == fu::Connection::State::Disconnected ||
-       _connection->state() == fu::Connection::State::Failed)) {
+      (_connection->state() == fu::Connection::State::Closed)) {
     return createConnection();
   }
   return _connection;
@@ -222,8 +226,7 @@ void V8ClientConnection::setInterrupted(bool interrupted) {
   if (interrupted && _connection != nullptr) {
     shutdownConnection();
   } else if (!interrupted && (_connection == nullptr ||
-                              (_connection->state() == fu::Connection::State::Disconnected ||
-                               _connection->state() == fu::Connection::State::Failed))) {
+                              (_connection->state() == fu::Connection::State::Closed))) {
     createConnection();
   }
 }
@@ -1722,12 +1725,7 @@ again:
   } else if (!body->IsNullOrUndefined()) {
     VPackBuffer<uint8_t> buffer;
     VPackBuilder builder(buffer, &_vpackOptions);
-    int res = TRI_V8ToVPack(isolate, builder, body, false);
-    if (res != TRI_ERROR_NO_ERROR) {
-      LOG_TOPIC("46ae2", ERR, Logger::V8)
-          << "error converting request body: " << TRI_errno_string(res);
-      return v8::Null(isolate);
-    }
+    TRI_V8ToVPack(isolate, builder, body, false);
     if (_forceJson) {
       auto resultJson = builder.slice().toJson();
       char const* resStr = resultJson.c_str();
@@ -1750,12 +1748,15 @@ again:
       req->header.acceptType(fu::ContentType::VPack);
     }
   }
+  else if (_forceJson && (req->header.acceptType() == fu::ContentType::VPack)) {
+    req->header.acceptType(fu::ContentType::Json);
+  }
   req->timeout(
       correctTimeoutToExecutionDeadline(
         std::chrono::duration_cast<std::chrono::milliseconds>(_requestTimeout)));
 
   std::shared_ptr<fu::Connection> connection = acquireConnection();
-  if (!connection || connection->state() == fu::Connection::State::Failed) {
+  if (!connection || connection->state() == fu::Connection::State::Closed) {
     TRI_V8_SET_EXCEPTION_MESSAGE(TRI_ERROR_SIMPLE_CLIENT_COULD_NOT_CONNECT,
                                  "not connected");
     return v8::Undefined(isolate);
@@ -1817,12 +1818,7 @@ again:
   } else if (!body->IsNullOrUndefined()) {
     VPackBuffer<uint8_t> buffer;
     VPackBuilder builder(buffer);
-    int res = TRI_V8ToVPack(isolate, builder, body, false);
-    if (res != TRI_ERROR_NO_ERROR) {
-      LOG_TOPIC("10318", ERR, Logger::V8)
-          << "error converting request body: " << TRI_errno_string(res);
-      return v8::Null(isolate);
-    }
+    TRI_V8ToVPack(isolate, builder, body, false);
     req->addVPack(std::move(buffer));
     req->header.contentType(fu::ContentType::VPack);
   } else {
@@ -1834,12 +1830,16 @@ again:
   if (req->header.acceptType() == fu::ContentType::Unset) {
     req->header.acceptType(fu::ContentType::VPack);
   }
+  if (_forceJson && (req->header.acceptType() == fu::ContentType::VPack)) {
+    req->header.acceptType(fu::ContentType::Json);
+  }
+
   req->timeout(
       correctTimeoutToExecutionDeadline(
         std::chrono::duration_cast<std::chrono::milliseconds>(_requestTimeout)));
 
   std::shared_ptr<fu::Connection> connection = acquireConnection();
-  if (!connection || connection->state() == fu::Connection::State::Failed) {
+  if (!connection || connection->state() == fu::Connection::State::Closed) {
     TRI_V8_SET_EXCEPTION_MESSAGE(TRI_ERROR_SIMPLE_CLIENT_COULD_NOT_CONNECT,
                                  "not connected");
     return v8::Undefined(isolate);
@@ -2004,6 +2004,8 @@ v8::Local<v8::Value> V8ClientConnection::handleResult(v8::Isolate* isolate,
 
     return result;
   }
+
+  TRI_ASSERT(res != nullptr);
 
   // complete
   _lastHttpReturnCode = res->statusCode();

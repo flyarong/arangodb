@@ -1,9 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief Library to build up VPack documents.
-///
 /// DISCLAIMER
 ///
-/// Copyright 2015 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -21,7 +20,6 @@
 ///
 /// @author Max Neunhoeffer
 /// @author Jan Steemann
-/// @author Copyright 2015, ArangoDB GmbH, Cologne, Germany
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <ostream>
@@ -30,6 +28,9 @@
 #include "velocypack/Exception.h"
 
 using namespace arangodb::velocypack;
+
+Exception::Exception(ExceptionType type, char const* msg) noexcept
+    : _type(type), _msg(msg) {}
 
 std::ostream& operator<<(std::ostream& stream, Exception const* ex) {
   stream << "[Exception " << ex->what() << "]";

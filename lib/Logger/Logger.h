@@ -1,8 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
-/// Copyright 2004-2013 triAGENS GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -20,11 +20,7 @@
 ///
 /// @author Achim Brandt
 /// @author Dr. Frank Celler
-///
-/// Portions of the code are:
-///
-/// Copyright (c) 1999, Google Inc.
-/// All rights reserved.
+////////////////////////////////////////////////////////////////////////////////
 //
 /// Redistribution and use in source and binary forms, with or without
 /// modification, are permitted provided that the following conditions are
@@ -146,6 +142,7 @@ class Logger {
  public:
   static LogTopic AGENCY;
   static LogTopic AGENCYCOMM;
+  static LogTopic AGENCYSTORE;
   static LogTopic AQL;
   static LogTopic AUTHENTICATION;
   static LogTopic AUTHORIZATION;
@@ -155,10 +152,8 @@ class Logger {
   static LogTopic CLUSTERCOMM;
   static LogTopic COLLECTOR;
   static LogTopic COMMUNICATION;
-  static LogTopic COMPACTOR;
   static LogTopic CONFIG;
   static LogTopic CRASH;
-  static LogTopic DATAFILES;
   static LogTopic DEVEL;
   static LogTopic DUMP;
   static LogTopic ENGINES;

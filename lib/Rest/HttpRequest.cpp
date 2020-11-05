@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -867,11 +867,14 @@ VPackSlice HttpRequest::payload(bool strictValidation) {
   if ((_contentType == ContentType::UNSET) || (_contentType == ContentType::JSON)) {
     if (!_payload.empty()) {
       if (!_vpackBuilder) {
+        TRI_ASSERT(!_validatedPayload);
         VPackOptions const* options = validationOptions(strictValidation);
         VPackParser parser(options);
         parser.parse(_payload.data(), _payload.size());
         _vpackBuilder = parser.steal();
+        _validatedPayload = true;
       }
+      TRI_ASSERT(_validatedPayload);
       return VPackSlice(_vpackBuilder->slice());
     }
     return VPackSlice::noneSlice();  // no body
@@ -881,6 +884,7 @@ VPackSlice HttpRequest::payload(bool strictValidation) {
       VPackValidator validator(options);
       _validatedPayload = validator.validate(_payload.data(), _payload.length()); // throws on error
     }
+    TRI_ASSERT(_validatedPayload);
     return VPackSlice(reinterpret_cast<uint8_t const*>(_payload.data()));
   }
   return VPackSlice::noneSlice();

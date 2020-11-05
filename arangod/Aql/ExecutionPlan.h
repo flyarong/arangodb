@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -262,6 +262,11 @@ class ExecutionPlan {
   /// @brief get ast
   inline Ast* getAst() const { return _ast; }
 
+  /// @brief resolves a variable alias, e.g. fn(tmp) -> "a.b" for the following:
+  ///  LET tmp = a.b
+  ///  LET x = tmp
+  AstNode const* resolveVariableAlias(AstNode const* node) const;
+
   /// @brief creates an anonymous calculation node for an arbitrary expression
   ExecutionNode* createTemporaryCalculation(AstNode const*, ExecutionNode*);
 
@@ -344,10 +349,6 @@ class ExecutionPlan {
   /// @brief create an execution plan element from an AST COLLECT node, COUNT
   ExecutionNode* fromNodeCollectCount(ExecutionNode*, AstNode const*);
 
-  /// @brief create an execution plan element from an AST COLLECT node,
-  /// AGGREGATE
-  ExecutionNode* fromNodeCollectAggregate(ExecutionNode*, AstNode const*);
-
   /// @brief create an execution plan element from an AST LIMIT node
   ExecutionNode* fromNodeLimit(ExecutionNode*, AstNode const*);
 
@@ -368,9 +369,14 @@ class ExecutionPlan {
 
   /// @brief create an execution plan element from an AST UPSERT node
   ExecutionNode* fromNodeUpsert(ExecutionNode*, AstNode const*);
+  
+  /// @brief create an execution plan element from an AST WINDOW node
+  ExecutionNode* fromNodeWindow(ExecutionNode*, AstNode const*);
 
   /// @brief create an vertex element for graph nodes
   AstNode const* parseTraversalVertexNode(ExecutionNode*&, AstNode const*);
+  
+  std::vector<AggregateVarInfo> prepareAggregateVars(ExecutionNode** previous, AstNode const* node);
 
  private:
   /// @brief map from node id to the actual node

@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -209,6 +209,7 @@ enum AstNodeType : uint32_t {
   NODE_TYPE_VIEW = 77,
   NODE_TYPE_PARAMETER_DATASOURCE = 78,
   NODE_TYPE_FOR_VIEW = 79,
+  NODE_TYPE_WINDOW = 80,
 };
 
 static_assert(NODE_TYPE_VALUE < NODE_TYPE_ARRAY, "incorrect node types order");

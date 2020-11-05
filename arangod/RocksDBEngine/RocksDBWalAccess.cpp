@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2017 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,9 +41,11 @@
 
 using namespace arangodb;
 
+RocksDBWalAccess::RocksDBWalAccess(RocksDBEngine& engine) : _engine(engine) {}
+
 /// {"tickMin":"123", "tickMax":"456", "version":"3.2", "serverId":"abc"}
 Result RocksDBWalAccess::tickRange(std::pair<TRI_voc_tick_t, TRI_voc_tick_t>& minMax) const {
-  rocksdb::TransactionDB* tdb = rocksutils::globalRocksDB();
+  rocksdb::TransactionDB* tdb = _engine.db();
   rocksdb::VectorLogPtr walFiles;
   rocksdb::Status s = tdb->GetSortedWalFiles(walFiles);
   if (!s.ok()) {
@@ -65,8 +67,8 @@ Result RocksDBWalAccess::tickRange(std::pair<TRI_voc_tick_t, TRI_voc_tick_t>& mi
 ///  }}
 ///
 TRI_voc_tick_t RocksDBWalAccess::lastTick() const {
-  rocksutils::globalRocksEngine()->flushWal(false, false, false);
-  return rocksutils::globalRocksDB()->GetLatestSequenceNumber();
+  _engine.flushWal(false, false);
+  return _engine.db()->GetLatestSequenceNumber();
 }
 
 /// should return the list of transactions started, but not committed in that
@@ -99,10 +101,10 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
   };
 
  public:
-  MyWALDumper(WalAccess::Filter const& filter,
-              WalAccess::MarkerCallback const& f, 
-              size_t maxResponseSize)
+  MyWALDumper(RocksDBEngine& engine, WalAccess::Filter const& filter,
+              WalAccess::MarkerCallback const& f, size_t maxResponseSize)
       : WalAccessContext(filter, f),
+        _engine(engine),
         _definitionsCF(RocksDBColumnFamily::definitions()->GetID()),
         _documentsCF(RocksDBColumnFamily::documents()->GetID()),
         _primaryCF(RocksDBColumnFamily::primary()->GetID()),
@@ -200,7 +202,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       case RocksDBLogType::CollectionTruncate: {
         resetTransientState();  // finish ongoing trx
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         if (shouldHandleCollection(dbid, cid)) {  // will check vocbase
           TRI_vocbase_t* vocbase = loadVocbase(dbid);
           if (vocbase != nullptr) {
@@ -223,7 +225,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
         resetTransientState();  // finish ongoing trx
 
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         // only print markers from this collection if it is set
         if (shouldHandleCollection(dbid, cid)) {  // will check vocbase
           TRI_vocbase_t* vocbase = loadVocbase(dbid);
@@ -253,7 +255,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
         resetTransientState();  // finish ongoing trx
 
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         IndexId iid = RocksDBLogValue::indexId(blob);
 
         // only print markers from this collection if it is set
@@ -293,7 +295,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       case RocksDBLogType::ViewDrop: {
         resetTransientState();  // finish ongoing trx
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t vid = RocksDBLogValue::viewId(blob);
+        DataSourceId vid = RocksDBLogValue::viewId(blob);
         if (shouldHandleView(dbid, vid)) {
           TRI_vocbase_t* vocbase = loadVocbase(dbid);
           if (vocbase != nullptr) {
@@ -362,7 +364,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       case RocksDBLogType::SinglePut: {
         resetTransientState();  // finish ongoing trx
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         if (shouldHandleCollection(dbid, cid)) {
           _state = SINGLE_PUT;
         }
@@ -371,7 +373,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       case RocksDBLogType::SingleRemove: {  // deprecated
         resetTransientState();              // finish ongoing trx
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         if (shouldHandleCollection(dbid, cid)) {
           _state = SINGLE_REMOVE;  // revisionId is unknown
         }
@@ -389,7 +391,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       case RocksDBLogType::SingleRemoveV2: {
         resetTransientState();  // finish ongoing trx
         TRI_voc_tick_t dbid = RocksDBLogValue::databaseId(blob);
-        TRI_voc_cid_t cid = RocksDBLogValue::collectionId(blob);
+        DataSourceId cid = RocksDBLogValue::collectionId(blob);
         if (shouldHandleCollection(dbid, cid)) {
           _state = SINGLE_REMOVE;
           _removedDocRid = RocksDBLogValue::revisionId(blob);
@@ -458,7 +460,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
         }  // ignore Put in any other case
       } else if (RocksDBKey::type(key) == RocksDBEntryType::Collection) {
         TRI_voc_tick_t dbid = RocksDBKey::databaseId(key);
-        TRI_voc_cid_t cid = RocksDBKey::collectionId(key);
+        DataSourceId cid = RocksDBKey::collectionId(key);
 
         if (shouldHandleCollection(dbid, cid) &&
             (_state == COLLECTION_CREATE || _state == COLLECTION_RENAME ||
@@ -494,7 +496,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
         }
       } else if (RocksDBKey::type(key) == RocksDBEntryType::View) {
         TRI_voc_tick_t dbid = RocksDBKey::databaseId(key);
-        TRI_voc_cid_t vid = RocksDBKey::viewId(key);
+        DataSourceId vid = RocksDBKey::viewId(key);
 
         if (shouldHandleView(dbid, vid) && (_state == VIEW_CREATE || _state == VIEW_CHANGE)) {
           TRI_vocbase_t* vocbase = loadVocbase(dbid);
@@ -535,9 +537,9 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
       _removedDocRid = RevisionId::none();
 
       uint64_t objectId = RocksDBKey::objectId(key);
-      auto dbCollPair = rocksutils::mapObjectToCollection(objectId);
+      auto dbCollPair = _engine.mapObjectToCollection(objectId);
       TRI_voc_tick_t const dbid = dbCollPair.first;
-      TRI_voc_cid_t const cid = dbCollPair.second;
+      DataSourceId const cid = dbCollPair.second;
 
       if (!shouldHandleCollection(dbid, cid)) {
         return rocksdb::Status();  // no reset here
@@ -588,9 +590,9 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
     TRI_ASSERT(_state != TRANSACTION || _trxDbId != 0);
 
     uint64_t objectId = RocksDBKey::objectId(key);
-    auto triple = rocksutils::mapObjectToIndex(objectId);
+    auto triple = _engine.mapObjectToIndex(objectId);
     TRI_voc_tick_t const dbid = std::get<0>(triple);
-    TRI_voc_cid_t const cid = std::get<1>(triple);
+    DataSourceId const cid = std::get<1>(triple);
 
     if (!shouldHandleCollection(dbid, cid)) {
       _removedDocRid = RevisionId::none();  // ignore rid too
@@ -750,6 +752,7 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
   }
 
  private:
+  RocksDBEngine& _engine;
   uint32_t const _definitionsCF;
   uint32_t const _documentsCF;
   uint32_t const _primaryCF;
@@ -774,10 +777,10 @@ class MyWALDumper final : public rocksdb::WriteBatch::Handler, public WalAccessC
 // iterates over WAL starting at 'from' and returns up to 'chunkSize' documents
 // from the corresponding database
 WalAccessResult RocksDBWalAccess::tail(Filter const& filter, size_t chunkSize,
-                                       TransactionId, MarkerCallback const& func) const {
+                                       MarkerCallback const& func) const {
   TRI_ASSERT(filter.transactionIds.empty());  // not supported in any way
 
-  rocksdb::TransactionDB* db = rocksutils::globalRocksDB();
+  rocksdb::TransactionDB* db = _engine.db();
 
   if (chunkSize < 16384) {  // we need to have some sensible minimum
     chunkSize = 16384;
@@ -786,7 +789,7 @@ WalAccessResult RocksDBWalAccess::tail(Filter const& filter, size_t chunkSize,
   // pre 3.4 breaking up write batches is not supported
   size_t maxTrxChunkSize = filter.tickLastScanned > 0 ? chunkSize : SIZE_MAX;
 
-  MyWALDumper dumper(filter, func, maxTrxChunkSize);
+  MyWALDumper dumper(_engine, filter, func, maxTrxChunkSize);
   const uint64_t since = dumper.safeBeginTick();
   TRI_ASSERT(since <= filter.tickStart);
   TRI_ASSERT(since <= filter.tickEnd);
@@ -797,7 +800,7 @@ WalAccessResult RocksDBWalAccess::tail(Filter const& filter, size_t chunkSize,
   uint64_t latestTick = db->GetLatestSequenceNumber();
 
   // prevent purging of WAL files while we are in here
-  RocksDBFilePurgePreventer purgePreventer(rocksutils::globalRocksEngine()->disallowPurging());
+  RocksDBFilePurgePreventer purgePreventer(_engine.disallowPurging());
 
   std::unique_ptr<rocksdb::TransactionLogIterator> iterator;  // reader();
   // no need verifying the WAL contents

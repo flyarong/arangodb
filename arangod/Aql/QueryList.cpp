@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,6 +41,8 @@
 #include "VocBase/vocbase.h"
 
 #include <velocypack/Builder.h>
+#include <velocypack/Dumper.h>
+#include <velocypack/Sink.h>
 #include <velocypack/StringRef.h>
 #include <velocypack/Value.h>
 #include <velocypack/velocypack-aliases.h>
@@ -48,13 +50,18 @@
 using namespace arangodb;
 using namespace arangodb::aql;
 
-QueryEntryCopy::QueryEntryCopy(TRI_voc_tick_t id, std::string&& queryString,
+QueryEntryCopy::QueryEntryCopy(TRI_voc_tick_t id, std::string const& database,
+                               std::string const& user, std::string&& queryString,
                                std::shared_ptr<arangodb::velocypack::Builder> const& bindParameters,
+                               std::vector<std::string> dataSources,
                                double started, double runTime,
                                QueryExecutionState::ValueType state, bool stream)
     : id(id),
+      database(database),
+      user(user),
       queryString(std::move(queryString)),
       bindParameters(bindParameters),
+      dataSources(std::move(dataSources)),
       started(started),
       runTime(runTime),
       state(state),
@@ -65,11 +72,20 @@ void QueryEntryCopy::toVelocyPack(velocypack::Builder& out) const {
 
   out.add(VPackValue(VPackValueType::Object));
   out.add("id", VPackValue(basics::StringUtils::itoa(id)));
+  out.add("database", VPackValue(database));
+  out.add("user", VPackValue(user));
   out.add("query", VPackValue(queryString));
   if (bindParameters != nullptr && !bindParameters->slice().isNone()) {
     out.add("bindVars", bindParameters->slice());
   } else {
     out.add("bindVars", arangodb::velocypack::Slice::emptyObjectSlice());
+  }
+  if (!dataSources.empty()) {
+    out.add("dataSources", VPackValue(VPackValueType::Array));
+    for (auto const& dn : dataSources) {
+      out.add(VPackValue(dn));
+    }
+    out.close();
   }
   out.add("started", VPackValue(timeString));
   out.add("runTime", VPackValue(runTime));
@@ -80,10 +96,12 @@ void QueryEntryCopy::toVelocyPack(velocypack::Builder& out) const {
 
 /// @brief create a query list
 QueryList::QueryList(QueryRegistryFeature& feature)
-    : _lock(),
-      _enabled(feature.trackSlowQueries()),
-      _trackSlowQueries(feature.trackSlowQueries()),
+    : _queryRegistryFeature(feature),
+      _enabled(feature.trackingEnabled()),
+      _trackSlowQueries(_enabled && feature.trackSlowQueries()),
+      _trackQueryString(feature.trackQueryString()),
       _trackBindVars(feature.trackBindVars()),
+      _trackDataSources(feature.trackDataSources()),
       _slowQueryThreshold(feature.slowQueryThreshold()),
       _slowStreamingQueryThreshold(feature.slowStreamingQueryThreshold()),
       _maxSlowQueries(defaultMaxSlowQueries),
@@ -94,7 +112,7 @@ QueryList::QueryList(QueryRegistryFeature& feature)
 /// @brief insert a query
 bool QueryList::insert(Query* query) {
   // not enable or no query string
-  if (!_enabled || query == nullptr || query->queryString().empty()) {
+  if (!enabled() || query == nullptr || query->queryString().empty()) {
     return false;
   }
 
@@ -139,13 +157,12 @@ void QueryList::remove(Query* query) {
   // elapsed time since query start
   double const elapsed = elapsedSince(query->startTime());
 
-  query->vocbase().server().getFeature<arangodb::MetricsFeature>().counter(
-      StaticStrings::AqlQueryRuntimeMs) += static_cast<uint64_t>(1000 * elapsed);
+  _queryRegistryFeature.trackQuery(elapsed);
 
-  if (!_trackSlowQueries.load(std::memory_order_relaxed) || query->killed()) {
+  if (!trackSlowQueries() || query->killed()) {
     return;
   }
-  
+
   bool const isStreaming = query->queryOptions().stream;
   double threshold = (isStreaming ? _slowStreamingQueryThreshold : _slowQueryThreshold);
 
@@ -156,6 +173,8 @@ void QueryList::remove(Query* query) {
       TRI_IF_FAILURE("QueryList::remove") {
         THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
       }
+  
+      _queryRegistryFeature.trackSlowQuery(elapsed);
       
       // we calculate the query start timestamp as the current time minus
       // the elapsed time since query start. this is not 100% accurrate, but
@@ -177,13 +196,34 @@ void QueryList::remove(Query* query) {
           }
         }
       }
+      
+      std::string dataSources;
+      if (_trackDataSources) {
+        auto const d = query->collectionNames();
+        if (!d.empty()) {
+          size_t i = 0;
+          dataSources = ", data sources: [";
+          arangodb::velocypack::StringSink sink(&dataSources);
+          arangodb::velocypack::Dumper dumper(&sink);
+          for (auto const& dn : d) {
+            if (i > 0) {
+              dataSources.push_back(',');
+            }
+            dumper.appendString(dn.data(), dn.size());
+            ++i;
+          }
+          dataSources.push_back(']');
+        }
+      }
 
       LOG_TOPIC("8bcee", WARN, Logger::QUERIES)
           << "slow " << (isStreaming ? "streaming " : "") << "query: '" << q << "'"
-          << bindParameters << ", took: " << Logger::FIXED(elapsed) << " s";
+          << bindParameters << dataSources << ", database: " << query->vocbase().name()
+          << ", user: " << query->user() << ", took: " << Logger::FIXED(elapsed) << " s";
 
-      _slow.emplace_back(query->id(), std::move(q),
+      _slow.emplace_back(query->id(), query->vocbase().name(), query->user(), std::move(q),
                          _trackBindVars ? query->bindParameters() : nullptr,
+                         _trackDataSources ? query->collectionNames() : std::vector<std::string>(),
                          now - elapsed, /* start timestamp */ 
                          elapsed /* run time */,
                          query->killed() ? QueryExecutionState::ValueType::KILLED
@@ -203,6 +243,8 @@ void QueryList::remove(Query* query) {
 
 /// @brief kills a query
 Result QueryList::kill(TRI_voc_tick_t id) {
+  size_t const maxLength = _maxQueryStringLength;
+
   READ_LOCKER(writeLocker, _lock);
 
   auto it = _current.find(id);
@@ -213,7 +255,7 @@ Result QueryList::kill(TRI_voc_tick_t id) {
 
   Query* query = (*it).second;
   LOG_TOPIC("25cc4", WARN, arangodb::Logger::FIXME)
-      << "killing AQL query " << id << " '" << query->queryString() << "'";
+      << "killing AQL query " << id << " '" << extractQueryString(query, maxLength) << "'";
 
   query->kill();
   return Result();
@@ -223,6 +265,7 @@ Result QueryList::kill(TRI_voc_tick_t id) {
 /// (i.e. the filter should return true for a queries to be killed)
 uint64_t QueryList::kill(std::function<bool(Query&)> const& filter, bool silent) {
   uint64_t killed = 0;
+  size_t const maxLength = _maxQueryStringLength;
 
   READ_LOCKER(readLocker, _lock);
 
@@ -235,10 +278,10 @@ uint64_t QueryList::kill(std::function<bool(Query&)> const& filter, bool silent)
 
     if (silent) {
       LOG_TOPIC("f7722", TRACE, arangodb::Logger::FIXME)
-          << "killing AQL query " << query.id() << " '" << query.queryString() << "'";
+          << "killing AQL query " << query.id() << " '" << extractQueryString(&query, maxLength) << "'";
     } else {
       LOG_TOPIC("90113", WARN, arangodb::Logger::FIXME)
-          << "killing AQL query " << query.id() << " '" << query.queryString() << "'";
+          << "killing AQL query " << query.id() << " '" << extractQueryString(&query, maxLength) << "'";
     }
 
     query.kill();
@@ -276,8 +319,10 @@ std::vector<QueryEntryCopy> QueryList::listCurrent() {
       // the elapsed time since query start. this is not 100% accurrate, but
       // best effort, and saves us from bookkeeping the start timestamp of the 
       // query inside the Query object.
-      result.emplace_back(query->id(), extractQueryString(query, maxLength),
+      result.emplace_back(query->id(), query->vocbase().name(), query->user(),
+                          extractQueryString(query, maxLength),
                           _trackBindVars ? query->bindParameters() : nullptr,
+                          _trackDataSources ? query->collectionNames() : std::vector<std::string>(),
                           now - elapsed /* start timestamp */, 
                           elapsed /* run time */,
                           query->killed() ? QueryExecutionState::ValueType::KILLED
@@ -322,5 +367,9 @@ size_t QueryList::count() {
 }
 
 std::string QueryList::extractQueryString(Query const* query, size_t maxLength) const {
-  return query->queryString().extract(maxLength);
+  TRI_ASSERT(query != nullptr);
+  if (trackQueryString()) {
+    return query->queryString().extract(maxLength);
+  }
+  return "<hidden>";
 }

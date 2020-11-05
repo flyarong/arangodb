@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,24 +49,24 @@ static std::string CurrentShardPath(arangodb::LogicalCollection const& col) {
   // Agency path is
   //   Current/Collections/<dbName>/<collectionID>/<shardID>
   return "Current/Collections/" + col.vocbase().name() + "/" +
-         std::to_string(col.planId()) + "/" + col.name();
+         std::to_string(col.planId().id()) + "/" + col.name();
 }
 
 static VPackSlice CurrentShardEntry(arangodb::LogicalCollection const& col, VPackSlice current) {
   return current.get(std::vector<std::string>(
-      {AgencyCommHelper::path(), "Current", "Collections",
-       col.vocbase().name(), std::to_string(col.planId()), col.name()}));
+      {AgencyCommHelper::path(), "Current", "Collections", col.vocbase().name(),
+       std::to_string(col.planId().id()), col.name()}));
 }
 
 static std::string PlanShardPath(arangodb::LogicalCollection const& col) {
   return "Plan/Collections/" + col.vocbase().name() + "/" +
-         std::to_string(col.planId()) + "/shards/" + col.name();
+         std::to_string(col.planId().id()) + "/shards/" + col.name();
 }
 
 static VPackSlice PlanShardEntry(arangodb::LogicalCollection const& col, VPackSlice plan) {
   return plan.get(std::vector<std::string>(
       {AgencyCommHelper::path(), "Plan", "Collections", col.vocbase().name(),
-       std::to_string(col.planId()), "shards", col.name()}));
+       std::to_string(col.planId().id()), "shards", col.name()}));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -114,15 +114,18 @@ Result FollowerInfo::add(ServerID const& sid) {
     // Not a leader is expected
     return agencyRes;
   }
-  // Real error, report
-
-  std::string errorMessage =
-      "unable to add follower in agency, timeout in agency CAS operation for "
-      "key " +
-      _docColl->vocbase().name() + "/" + std::to_string(_docColl->planId()) +
-      ": " + TRI_errno_string(agencyRes.errorNumber());
-  LOG_TOPIC("6295b", ERR, Logger::CLUSTER) << errorMessage;
-  agencyRes.reset(agencyRes.errorNumber(), std::move(errorMessage));
+    
+  if (!agencyRes.is(TRI_ERROR_ARANGO_DATABASE_NOT_FOUND) &&
+      !agencyRes.is(TRI_ERROR_ARANGO_DATA_SOURCE_NOT_FOUND)) {
+    // "Real error", report and log
+    std::string errorMessage =
+        "unable to add follower in agency, timeout in agency CAS operation for "
+        "key " +
+        _docColl->vocbase().name() + "/" + std::to_string(_docColl->planId().id()) +
+        ": " + TRI_errno_string(agencyRes.errorNumber());
+    LOG_TOPIC("6295b", ERR, Logger::CLUSTER) << errorMessage;
+    agencyRes.reset(agencyRes.errorNumber(), std::move(errorMessage));
+  }
   return agencyRes;
 }
 
@@ -158,28 +161,39 @@ Result FollowerInfo::remove(ServerID const& sid) {
                                          // local data is modified again.
 
   // First check if there is anything to do:
-  if (std::find(_followers->begin(), _followers->end(), sid) == _followers->end()) {
-    TRI_ASSERT(std::find(_failoverCandidates->begin(), _failoverCandidates->end(),
-                         sid) == _failoverCandidates->end());
+  if (std::find(_followers->begin(), _followers->end(), sid)
+        == _followers->end() &&
+      std::find(_failoverCandidates->begin(), _failoverCandidates->end(), sid)
+        == _failoverCandidates->end()) {
     return {TRI_ERROR_NO_ERROR};  // nothing to do
   }
-  // Both lists have to be in sync at any time!
+  // Both lists have to be in sync most of the time, sometimes the
+  // _failoverCandidates have additional servers, and sometimes, this
+  // code here is called to remove a server from the _failoverCandidates,
+  // even if it is not on _followers. There should never be a follower
+  // which is in _followers but not in _failoverCandidates. Therefore,
+  // there should never be a call to remove here for a server which is
+  // not in the failoverCandidates.
+  // Note that it is possible that _followers is empty, when we have to
+  // remove a failoverCandidate.
   TRI_ASSERT(std::find(_failoverCandidates->begin(), _failoverCandidates->end(),
                        sid) != _failoverCandidates->end());
   auto oldFollowers = _followers;
   auto oldFailovers = _failoverCandidates;
   {
     auto v = std::make_shared<std::vector<ServerID>>();
-    TRI_ASSERT(!_followers->empty());  // well we found the element above \o/
-    v->reserve(_followers->size() - 1);
+    if (!_followers->empty()) {
+      v->reserve(_followers->size() - 1);
+    }
     std::remove_copy(_followers->begin(), _followers->end(),
                      std::back_inserter(*v.get()), sid);
     _followers = v;  // will cast to std::vector<ServerID> const
   }
   {
     auto v = std::make_shared<std::vector<ServerID>>();
-    TRI_ASSERT(!_failoverCandidates->empty());  // well we found the element above \o/
-    v->reserve(_failoverCandidates->size() - 1);
+    if (!_failoverCandidates->empty()) {
+      v->reserve(_failoverCandidates->size() - 1);
+    }
     std::remove_copy(_failoverCandidates->begin(), _failoverCandidates->end(),
                      std::back_inserter(*v.get()), sid);
     _failoverCandidates = v;  // will cast to std::vector<ServerID> const
@@ -192,7 +206,7 @@ Result FollowerInfo::remove(ServerID const& sid) {
       _canWrite = false;
     }
     // we are finished
-    _docColl->vocbase().server().getFeature<arangodb::ClusterFeature>().getDroppedFollowerCounter()++;
+    _docColl->vocbase().server().getFeature<arangodb::ClusterFeature>().followersDroppedCounter()++;
     LOG_TOPIC("be0cb", DEBUG, Logger::CLUSTER)
         << "Removing follower " << sid << " from " << _docColl->name() << " succeeded";
     return agencyRes;
@@ -208,7 +222,7 @@ Result FollowerInfo::remove(ServerID const& sid) {
   std::string errorMessage =
       "unable to remove follower from agency, timeout in agency CAS operation "
       "for key " +
-      _docColl->vocbase().name() + "/" + std::to_string(_docColl->planId()) +
+      _docColl->vocbase().name() + "/" + std::to_string(_docColl->planId().id()) +
       ": " + TRI_errno_string(agencyRes.errorNumber());
   LOG_TOPIC("a0dcc", ERR, Logger::CLUSTER) << errorMessage;
   agencyRes.resetErrorMessage<std::string>(std::move(errorMessage));
@@ -318,7 +332,7 @@ bool FollowerInfo::updateFailoverCandidates() {
     // Collection left in RO mode.
     LOG_TOPIC("7af00", INFO, Logger::CLUSTER)
         << "Could not persist insync follower for " << _docColl->vocbase().name()
-        << "/" << std::to_string(_docColl->planId())
+        << "/" << std::to_string(_docColl->planId().id())
         << " keep RO-mode for now, next write will retry.";
     TRI_ASSERT(!_canWrite);
   } else {
@@ -341,8 +355,8 @@ Result FollowerInfo::persistInAgency(bool isRemove) const {
   auto wait(50ms), waitMore(wait);
   do {
     if (_docColl->deleted() || _docColl->vocbase().isDropped()) {
-      LOG_TOPIC("8972a", INFO, Logger::CLUSTER) << "giving up persisting follower info for dropped collection";
-      return TRI_ERROR_ARANGO_DATA_SOURCE_NOT_FOUND;
+      LOG_TOPIC("8972a", DEBUG, Logger::CLUSTER) << "giving up persisting follower info for dropped collection";
+      return {TRI_ERROR_ARANGO_DATA_SOURCE_NOT_FOUND};
     }
     AgencyReadTransaction trx(std::vector<std::string>(
         {AgencyCommHelper::path(planPath), AgencyCommHelper::path(curPath)}));
@@ -371,11 +385,12 @@ Result FollowerInfo::persistInAgency(bool isRemove) const {
         }
       } else {
         if (!planEntry.isArray() || planEntry.length() == 0 || !planEntry[0].isString() ||
-            !planEntry[0].isEqualString(ServerState::instance()->getId())) {
+            !(planEntry[0].isEqualString(ServerState::instance()->getId()) ||
+              planEntry[0].isEqualString("_" + ServerState::instance()->getId()))) {
           LOG_TOPIC("42231", INFO, Logger::CLUSTER)
               << reportName(isRemove)
               << ", did not find myself in Plan: " << _docColl->vocbase().name()
-              << "/" << std::to_string(_docColl->planId())
+              << "/" << std::to_string(_docColl->planId().id())
               << " (can happen when the leader changed recently).";
           if (!planEntry.isNone()) {
             LOG_TOPIC("ffede", INFO, Logger::CLUSTER) << "Found: " << planEntry.toJson();

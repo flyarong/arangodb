@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -79,6 +80,7 @@ class DatabaseFeature : public application_features::ApplicationFeature {
   void beginShutdown() override final;
   void stop() override final;
   void unprepare() override final;
+  void prepare() override final;
 
   // used by catch tests
 #ifdef ARANGODB_USE_GOOGLE_TESTS
@@ -133,6 +135,7 @@ class DatabaseFeature : public application_features::ApplicationFeature {
   bool isInitiallyEmpty() const { return _isInitiallyEmpty; }
   bool checkVersion() const { return _checkVersion; }
   bool upgrade() const { return _upgrade; }
+  bool useOldSystemCollections() const { return _useOldSystemCollections; }
   bool forceSyncProperties() const { return _forceSyncProperties; }
   void forceSyncProperties(bool value) { _forceSyncProperties = value; }
   bool waitForSync() const { return _defaultWaitForSync; }
@@ -140,12 +143,6 @@ class DatabaseFeature : public application_features::ApplicationFeature {
   void enableCheckVersion() { _checkVersion = true; }
   void enableUpgrade() { _upgrade = true; }
   void disableUpgrade() { _upgrade = false; }
-  bool throwCollectionNotLoadedError() const {
-    return _throwCollectionNotLoadedError.load(std::memory_order_relaxed);
-  }
-  void throwCollectionNotLoadedError(bool value) {
-    _throwCollectionNotLoadedError.store(value);
-  }
   void isInitiallyEmpty(bool value) { _isInitiallyEmpty = value; }
   
   struct DatabasesLists {
@@ -153,15 +150,19 @@ class DatabaseFeature : public application_features::ApplicationFeature {
     std::unordered_set<TRI_vocbase_t*> _droppedDatabases;
   };
 
+  static TRI_vocbase_t& getCalculationVocbase();
+  
+
  private:
+  static void initCalculationVocbase(application_features::ApplicationServer& server);
+
   void stopAppliers();
-  void updateContexts();
 
   /// @brief create base app directory
   int createBaseApplicationDirectory(std::string const& appPath, std::string const& type);
 
   /// @brief create app subdirectory for a database
-  int createApplicationDirectory(std::string const& name, std::string const& basePath);
+  int createApplicationDirectory(std::string const& name, std::string const& basePath, bool removeExisting);
 
   /// @brief iterate over all databases in the databases directory and open them
   int iterateDatabases(arangodb::velocypack::Slice const& databases);
@@ -180,7 +181,6 @@ class DatabaseFeature : public application_features::ApplicationFeature {
   bool _defaultWaitForSync;
   bool _forceSyncProperties;
   bool _ignoreDatafileErrors;
-  std::atomic<bool> _throwCollectionNotLoadedError;
 
   std::unique_ptr<DatabaseManagerThread> _databaseManager;
 
@@ -193,6 +193,7 @@ class DatabaseFeature : public application_features::ApplicationFeature {
   bool _isInitiallyEmpty;
   bool _checkVersion;
   bool _upgrade;
+  bool _useOldSystemCollections;
 
   /// @brief lock for serializing the creation of databases
   arangodb::Mutex _databaseCreateLock;

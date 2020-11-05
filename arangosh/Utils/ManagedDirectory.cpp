@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -337,7 +338,8 @@ std::unique_ptr<ManagedDirectory::File> ManagedDirectory::readableFile(std::stri
 
   if (!_status.fail()) {  // directory is in a bad state?
     try {
-      bool gzFlag = (0 == filename.substr(filename.size() - 3).compare(".gz"));
+      bool gzFlag = filename.size() > 3 && 
+                    (0 == filename.substr(filename.size() - 3).compare(".gz"));
       file = std::make_unique<File>(*this, filename,
                                     (ManagedDirectory::DefaultReadFlags ^ flags), gzFlag);
     } catch (...) {

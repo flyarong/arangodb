@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2019 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -41,6 +42,7 @@
 #include "VocBase/ManagedDocumentResult.h"
 
 #include "velocypack/Builder.h"
+#include "velocypack/Collection.h"
 #include "velocypack/Slice.h"
 #include "velocypack/velocypack-aliases.h"
 
@@ -121,7 +123,7 @@ class SpliceSubqueryNodeOptimizerRuleTest : public ::testing::Test {
   std::shared_ptr<VPackBuilder> enableRuleOptions(const char* const additionalOptionsString) const {
     auto const additionalOptions = VPackParser::fromJson(additionalOptionsString);
     auto const enableRuleOptionString = R"({"optimizer": { "rules": [ "+splice-subqueries" ] } })";
-    return std::make_shared<VPackBuilder>(basics::VelocyPackHelper::merge(
+    return std::make_shared<VPackBuilder>(arangodb::velocypack::Collection::merge(
         VPackParser::fromJson(enableRuleOptionString)->slice(),
         additionalOptions->slice(), false, false));
   }
@@ -130,7 +132,7 @@ class SpliceSubqueryNodeOptimizerRuleTest : public ::testing::Test {
     auto const additionalOptions = VPackParser::fromJson(additionalOptionsString);
     auto const disableRuleOptionString =
         R"({"optimizer": { "rules": [ "-splice-subqueries" ] } })";
-    return std::make_shared<VPackBuilder>(basics::VelocyPackHelper::merge(
+    return std::make_shared<VPackBuilder>(arangodb::velocypack::Collection::merge(
         VPackParser::fromJson(disableRuleOptionString)->slice(),
         additionalOptions->slice(), false, false));
   }

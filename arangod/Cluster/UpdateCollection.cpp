@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -105,6 +105,12 @@ bool UpdateCollection::first() {
       // from the local list of followers. Will be reported
       // to Current in due course.
       if (!followersToDrop.empty()) {
+        TRI_IF_FAILURE("Maintenance::doNotRemoveUnPlannedFollowers") {
+          LOG_TOPIC("de342", ERR, Logger::MAINTENANCE)
+              << "Skipping check for followers not in Plan because of failure "
+                 "point.";
+          return false;
+        }
         auto& followers = coll->followers();
         std::vector<std::string> ftd =
             arangodb::basics::StringUtils::split(followersToDrop, ',');
@@ -112,7 +118,8 @@ bool UpdateCollection::first() {
           followers->remove(s);
         }
       }
-      _result = Collections::updateProperties(*coll, props);
+      OperationOptions options(ExecContext::current());
+      _result = Collections::updateProperties(*coll, props, options);
 
       if (!_result.ok()) {
         LOG_TOPIC("c3733", ERR, Logger::MAINTENANCE)
@@ -141,7 +148,11 @@ bool UpdateCollection::first() {
                              _description.get(SERVER_ID), _result);
   }
 
-  notify();
-
   return false;
+}
+void UpdateCollection::setState(ActionState state) {
+  if ((COMPLETE == state || FAILED == state) && _state != state) {
+    _feature.unlockShard(_description.get(SHARD));
+  }
+  ActionBase::setState(state);
 }

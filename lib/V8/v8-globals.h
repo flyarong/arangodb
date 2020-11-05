@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -420,6 +420,13 @@ inline std::string TRI_ObjectToString(v8::Local<v8::Context> &context, v8::Isola
 #define TRI_GET_GLOBAL(WHICH, TYPE) \
   auto WHICH = v8::Local<TYPE>::New(isolate, v8g->WHICH)
 
+namespace arangodb {
+namespace transaction {
+class V8Context;
+}
+class TransactionState;
+}
+
 /// @brief globals stored in the isolate
 struct TRI_v8_global_t {
   /// @brief wrapper around a v8::Persistent to hold a shared_ptr and cleanup
@@ -725,6 +732,9 @@ struct TRI_v8_global_t {
   /// @brief "waitForSync" key name
   v8::Persistent<v8::String> WaitForSyncKey;
 
+  /// @brief "compact" key name
+  v8::Persistent<v8::String> CompactKey;
+
   /// @brief "_dbCache" key name
   v8::Persistent<v8::String> _DbCacheKey;
 
@@ -745,7 +755,9 @@ struct TRI_v8_global_t {
   v8::Handle<v8::Value> _currentResponse;
 
   /// @brief information about the currently running transaction
-  void* _transactionContext;
+  arangodb::transaction::V8Context* _transactionContext;
+  
+  std::shared_ptr<arangodb::TransactionState> _transactionState;
 
   /// @brief current AQL expressionContext
   void* _expressionContext;

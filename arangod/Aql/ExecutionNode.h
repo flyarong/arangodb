@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -166,6 +166,7 @@ class ExecutionNode {
     MATERIALIZE = 31,
     ASYNC = 32,
     MUTEX = 33,
+    WINDOW = 34,
 
     MAX_NODE_TYPE_VALUE
   };
@@ -778,7 +779,7 @@ class CalculationNode : public ExecutionNode {
   /// @brief return out variable
   Variable const* outVariable() const;
 
-  /// @brief return the expression
+  /// @brief return the expression. never a nullptr!
   Expression* expression() const;
 
   /// @brief estimateCost

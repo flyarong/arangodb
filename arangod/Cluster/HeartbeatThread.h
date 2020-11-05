@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2018 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,7 +50,7 @@ struct AgencyVersions {
       : plan(_plan), current(_plan) {}
 
   explicit AgencyVersions(const DBServerAgencySyncResult& result)
-      : plan(result.planVersion), current(result.currentVersion) {}
+      : plan(result.planIndex), current(result.currentIndex) {}
 };
 
 class AgencyCallbackRegistry;
@@ -324,7 +324,7 @@ class HeartbeatThread : public CriticalThread,
   // last value of current which we have noticed:
   std::atomic<uint64_t> _lastCurrentVersionNoticed;
   // For periodic update of the current DBServer list:
-  std::atomic<int> _DBServerUpdateCounter;
+  std::atomic<int> _updateCounter;
 
   /// @brief Sync job
   DBServerAgencySync _agencySync;

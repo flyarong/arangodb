@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,7 @@
 
 #include "SingleServerEdgeCursor.h"
 
+#include "Aql/AstNode.h"
 #include "Graph/BaseOptions.h"
 #include "Graph/EdgeDocumentToken.h"
 #include "Graph/TraverserCache.h"
@@ -220,7 +221,7 @@ void SingleServerEdgeCursor::readAll(EdgeCursor::Callback const& callback) {
       LogicalCollection* collection = cursor->collection();
       auto cid = collection->id();
       if (cursor->hasExtra()) {
-        auto cb = [&](LocalDocumentId const& token, VPackSlice edge) {
+        cursor->allExtra([&](LocalDocumentId const& token, VPackSlice edge) {
 #ifdef USE_ENTERPRISE
           if (_trx->skipInaccessible() &&
               CheckInaccessible(_trx, edge)) {
@@ -229,10 +230,9 @@ void SingleServerEdgeCursor::readAll(EdgeCursor::Callback const& callback) {
 #endif
           callback(EdgeDocumentToken(cid, token), edge, cursorId);
           return true;
-        };
-        cursor->allExtra(cb);
+        });
       } else {
-        auto cb = [&](LocalDocumentId const& token) {
+        cursor->all([&](LocalDocumentId const& token) {
           return collection->readDocumentWithCallback(_trx, token, [&](LocalDocumentId const&, VPackSlice edgeDoc) {
 #ifdef USE_ENTERPRISE
             if (_trx->skipInaccessible()) {
@@ -248,8 +248,7 @@ void SingleServerEdgeCursor::readAll(EdgeCursor::Callback const& callback) {
             callback(EdgeDocumentToken(cid, token), edgeDoc, cursorId);
             return true;
           });
-        };
-        cursor->all(cb);
+        });
       }
     }
   }

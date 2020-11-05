@@ -1,7 +1,8 @@
-//////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2017 EMC Corporation
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -15,7 +16,7 @@
 /// See the License for the specific language governing permissions and
 /// limitations under the License.
 ///
-/// Copyright holder is EMC Corporation
+/// Copyright holder is ArangoDB GmbH, Cologne, Germany
 ///
 /// @author Andrey Abramov
 /// @author Vasiliy Nabatchikov
@@ -57,11 +58,6 @@ using namespace std::literals;
 
 namespace {
 
-////////////////////////////////////////////////////////////////////////////////
-/// @brief the storage format used with IResearch writers
-////////////////////////////////////////////////////////////////////////////////
-const irs::string_ref IRESEARCH_STORE_FORMAT("1_3simd");
-
 typedef irs::async_utils::read_write_mutex::read_mutex ReadMutex;
 typedef irs::async_utils::read_write_mutex::write_mutex WriteMutex;
 
@@ -100,8 +96,8 @@ struct LinkTrxState final : public arangodb::TransactionState::Cookie {
 
   operator irs::index_writer::documents_context&() noexcept { return _ctx; }
 
-  void remove(arangodb::LocalDocumentId const& value) {
-    _ctx.remove(_removals.emplace(value));
+  void remove(arangodb::StorageEngine& engine, arangodb::LocalDocumentId const& value) {
+    _ctx.remove(_removals.emplace(engine, value));
   }
 
   void reset() noexcept {
@@ -281,7 +277,7 @@ irs::utf8_path getPersistedPath(arangodb::DatabasePathFeature const& dbPathFeatu
   dataPath += std::to_string(link.collection().vocbase().id());
   dataPath /= arangodb::iresearch::DATA_SOURCE_TYPE.name();
   dataPath += "-";
-  dataPath += std::to_string(link.collection().id());  // has to be 'id' since this can be a per-shard collection
+  dataPath += std::to_string(link.collection().id().id());  // has to be 'id' since this can be a per-shard collection
   dataPath += "_";
   dataPath += std::to_string(link.id().id());
 
@@ -328,16 +324,6 @@ IResearchLink::IResearchLink(arangodb::IndexId iid, LogicalCollection& collectio
 
     prev.reset();
   };
-
-  // initialize commit callback
-  _before_commit = [this](uint64_t tick, irs::bstring& out) {
-    _lastCommittedTick = std::max(_lastCommittedTick, TRI_voc_tick_t(tick)); // update last tick
-    tick = irs::numeric_utils::hton64(uint64_t(_lastCommittedTick)); // convert to BE
-
-    out.append(reinterpret_cast<irs::byte_type const*>(&tick), sizeof(uint64_t));
-
-    return true;
-  };
 }
 
 IResearchLink::~IResearchLink() {
@@ -358,8 +344,13 @@ bool IResearchLink::operator==(IResearchLinkMeta const& meta) const noexcept {
   return _meta == meta;
 }
 
-void IResearchLink::afterTruncate() {
+void IResearchLink::afterTruncate(TRI_voc_tick_t tick,
+                                  arangodb::transaction::Methods* trx) {
   SCOPED_LOCK(_asyncSelf->mutex());  // '_dataStore' can be asynchronously modified
+
+  TRI_IF_FAILURE("ArangoSearchTruncateFailure") {
+    THROW_ARANGO_EXCEPTION(TRI_ERROR_DEBUG);
+  }
 
   if (!*_asyncSelf) {
     // the current link is no longer valid (checked after ReadLock acquisition)
@@ -371,9 +362,56 @@ void IResearchLink::afterTruncate() {
 
   TRI_ASSERT(_dataStore);  // must be valid if _asyncSelf->get() is valid
 
+  if (trx != nullptr) {
+    auto* key = this;
+
+    auto& state = *(trx->state());
+
+    // TODO FIXME find a better way to look up a ViewState
+#ifdef ARANGODB_ENABLE_MAINTAINER_MODE
+    auto* ctx = dynamic_cast<LinkTrxState*>(state.cookie(key));
+#else
+    auto* ctx = static_cast<LinkTrxState*>(state.cookie(key));
+#endif
+
+    if (ctx) {
+      ctx->reset(); // throw away all pending operations as clear will overwrite them all
+      state.cookie(key, nullptr); // force active segment release to allow commit go and avoid deadlock in clear
+    }
+  }
+
+  auto const lastCommittedTick = _lastCommittedTick;
+  bool recoverCommittedTick = true;
+
+  auto lastCommittedTickGuard = irs::make_finally([lastCommittedTick, this, &recoverCommittedTick]()->void {
+      if (recoverCommittedTick) {
+        _lastCommittedTick = lastCommittedTick;
+      }
+    });
+
   try {
-    _dataStore._writer->clear();
-    _dataStore._reader = _dataStore._reader.reopen();
+    _dataStore._writer->clear(tick);
+    recoverCommittedTick = false; //_lastCommittedTick now updated and data is written to storage
+
+    // get new reader
+    auto reader = _dataStore._reader.reopen();
+
+    if (!reader) {
+      // nothing more to do
+      LOG_TOPIC("1c2c1", WARN, iresearch::TOPIC)
+        << "failed to update snapshot after truncate "
+        << ", reuse the existing snapshot for arangosearch link '" << id() << "'";
+      return;
+    }
+
+    // update reader
+    _dataStore._reader = reader;
+
+    auto subscription = std::static_pointer_cast<IResearchFlushSubscription>(_flushSubscription);
+
+    if (subscription) {
+      subscription->tick(_lastCommittedTick);
+    }
   } catch (std::exception const& e) {
     LOG_TOPIC("a3c57", ERR, iresearch::TOPIC)
         << "caught exception while truncating arangosearch link '" << id()
@@ -571,15 +609,6 @@ Result IResearchLink::commitUnsafe(bool wait) {
   // NOTE: assumes that '_asyncSelf' is read-locked (for use with async tasks)
   TRI_ASSERT(_dataStore); // must be valid if _asyncSelf->get() is valid
 
-  auto* engine = EngineSelectorFeature::ENGINE;
-
-  if (!engine) {
-    return {
-        TRI_ERROR_INTERNAL,
-        "failure to get storage engine while committing arangosearch link '" +
-            std::to_string(id().id()) + "'"};
-  }
-
   auto subscription = std::static_pointer_cast<IResearchFlushSubscription>(_flushSubscription);
 
   if (!subscription) {
@@ -588,7 +617,7 @@ Result IResearchLink::commitUnsafe(bool wait) {
   }
 
   try {
-    auto const lastTickBeforeCommit = engine->currentTick();
+    auto const lastTickBeforeCommit = _engine->currentTick();
 
     TRY_SCOPED_LOCK_NAMED(_commitMutex, commitLock);
 
@@ -605,7 +634,7 @@ Result IResearchLink::commitUnsafe(bool wait) {
 
     try {
       // _lastCommittedTick is being updated in '_before_commit'
-      _dataStore._writer->commit(_before_commit);
+      _dataStore._writer->commit();
     } catch (...) {
       // restore last committed tick in case of any error
       _lastCommittedTick = lastCommittedTick;
@@ -801,7 +830,7 @@ Result IResearchLink::init(
 
   // definition should already be normalized and analyzers created if required
   if (!meta.init(_collection.vocbase().server(), definition, true, error,
-                 &(_collection.vocbase()))) {
+                 _collection.vocbase().name())) {
     return {
       TRI_ERROR_BAD_PARAMETER,
       "error parsing view link parameters from json: " + error
@@ -1019,22 +1048,15 @@ Result IResearchLink::initDataStore(
   auto& dbPathFeature = server.getFeature<DatabasePathFeature>();
   auto& flushFeature = server.getFeature<FlushFeature>();
 
-  auto format = irs::formats::get(IRESEARCH_STORE_FORMAT);
+  auto format = irs::formats::get(LATEST_FORMAT);
 
   if (!format) {
     return {TRI_ERROR_INTERNAL,
-            "failed to get data store codec '"s + IRESEARCH_STORE_FORMAT.c_str() +
+            "failed to get data store codec '"s + LATEST_FORMAT.data() +
                 "' while initializing link '" + std::to_string(_id.id()) + "'"};
   }
 
-  _engine = EngineSelectorFeature::ENGINE;
-
-  if (!_engine) {
-    return {
-        TRI_ERROR_INTERNAL,
-        "failure to get storage engine while initializing arangosearch link '" +
-            std::to_string(id().id()) + "'"};
-  }
+  _engine = &server.getFeature<EngineSelectorFeature>().engine();
 
   bool pathExists;
 
@@ -1110,6 +1132,15 @@ Result IResearchLink::initDataStore(
   irs::index_writer::init_options options;
   options.lock_repository = false; // do not lock index, ArangoDB has its own lock
   options.comparator = sorted ? &_comparer : nullptr; // set comparator if requested
+  // initialize commit callback
+  options.meta_payload_provider = [this](uint64_t tick, irs::bstring& out) {
+    _lastCommittedTick = std::max(_lastCommittedTick, TRI_voc_tick_t(tick)); // update last tick
+    tick = irs::numeric_utils::hton64(uint64_t(_lastCommittedTick)); // convert to BE
+
+    out.append(reinterpret_cast<irs::byte_type const*>(&tick), sizeof(uint64_t));
+
+    return true;
+  };
 
   // as meta is still not filled at this moment
   // we need to store all compression mapping there
@@ -1155,7 +1186,7 @@ Result IResearchLink::initDataStore(
   }
 
   if (!_dataStore._reader) {
-    _dataStore._writer->commit(_before_commit); // initialize 'store'
+    _dataStore._writer->commit(); // initialize 'store'
     _dataStore._reader = irs::directory_reader::open(*(_dataStore._directory));
   }
 
@@ -1398,8 +1429,7 @@ void IResearchLink::setupMaintenance() {
 Result IResearchLink::insert(
     transaction::Methods& trx,
     LocalDocumentId const& documentId,
-    velocypack::Slice const& doc,
-    Index::OperationMode /*mode*/) {
+    velocypack::Slice const doc) {
   TRI_ASSERT(_engine);
   TRI_ASSERT(trx.state());
 
@@ -1538,7 +1568,7 @@ bool IResearchLink::matchesDefinition(VPackSlice const& slice) const {
   std::string errorField;
 
   return other.init(_collection.vocbase().server(), slice, true, errorField,
-                    &(_collection.vocbase()))  // for db-server analyzer validation should have already apssed on coordinator (missing analyzer == no match)
+                    _collection.vocbase().name())  // for db-server analyzer validation should have already apssed on coordinator (missing analyzer == no match)
          && _meta == other;
 }
 
@@ -1610,8 +1640,7 @@ Result IResearchLink::properties(IResearchViewMeta const& meta) {
 Result IResearchLink::remove(
     transaction::Methods& trx,
     LocalDocumentId const& documentId,
-    velocypack::Slice const& /*doc*/,
-    Index::OperationMode /*mode*/) {
+    velocypack::Slice const /*doc*/) {
   TRI_ASSERT(_engine);
   TRI_ASSERT(trx.state());
 
@@ -1675,7 +1704,7 @@ Result IResearchLink::remove(
   // all of its fid stores, no impact to iResearch View data integrity
   // ...........................................................................
   try {
-    ctx->remove(documentId);
+    ctx->remove(*_engine, documentId);
 
     return {TRI_ERROR_NO_ERROR};
   } catch (basics::Exception const& e) {

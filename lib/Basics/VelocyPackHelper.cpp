@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2016 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -778,11 +778,6 @@ int VelocyPackHelper::compare(VPackSlice lhs, VPackSlice rhs, bool useUTF8,
       TRI_ASSERT(false);
       return 0;
   }
-}
-
-VPackBuilder VelocyPackHelper::merge(VPackSlice const& lhs, VPackSlice const& rhs,
-                                     bool nullMeansRemove, bool mergeObjects) {
-  return VPackCollection::merge(lhs, rhs, mergeObjects, nullMeansRemove);
 }
 
 double VelocyPackHelper::toDouble(VPackSlice const& slice, bool& failed) {
