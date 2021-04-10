@@ -51,7 +51,7 @@ enum class ErrorCode : uint32_t {
 
 #define DECLARE_ERROR_CODE(class_name) \
   static const ErrorCode CODE = ErrorCode::class_name; \
-  virtual iresearch::ErrorCode code() const noexcept override { return CODE; }
+  virtual ::iresearch::ErrorCode code() const noexcept override { return CODE; }
 
 //////////////////////////////////////////////////////////////////////////////
 /// @struct error_base
@@ -108,15 +108,6 @@ struct IRESEARCH_API io_error : detailed_error_base {
     : detailed_error_base(std::forward<T>(error)) {
   }
 }; // io_error
-
-//////////////////////////////////////////////////////////////////////////////
-/// @struct eof_error
-//////////////////////////////////////////////////////////////////////////////
-struct IRESEARCH_API eof_error : io_error {
-  DECLARE_ERROR_CODE(eof_error);
-
-  virtual const char* what() const noexcept override;
-}; // eof_error
 
 //////////////////////////////////////////////////////////////////////////////
 /// @struct lock_obtain_failed

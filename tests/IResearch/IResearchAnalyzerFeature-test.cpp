@@ -56,6 +56,7 @@
 #include "IResearch/IResearchAnalyzerFeature.h"
 #include "IResearch/IResearchCommon.h"
 #include "IResearch/IResearchFeature.h"
+#include "IResearch/IResearchVPackTermAttribute.h"
 #include "IResearch/VelocyPackHelper.h"
 #include "Indexes/IndexFactory.h"
 #include "Network/NetworkFeature.h"
@@ -97,7 +98,6 @@ struct TestIndex : public arangodb::Index {
   bool canBeDropped() const override { return false; }
   bool hasSelectivityEstimate() const override { return false; }
   bool isHidden() const override { return false; }
-  bool isPersistent() const override { return false; }
   bool isSorted() const override { return false; }
   std::unique_ptr<arangodb::IndexIterator> iteratorForCondition(
       arangodb::transaction::Methods* /* trx */, arangodb::aql::AstNode const* /* node */,
@@ -256,19 +256,121 @@ class TestAnalyzer : public irs::analysis::analyzer {
 
 REGISTER_ANALYZER_VPACK(TestAnalyzer, TestAnalyzer::make, TestAnalyzer::normalize);
 
+
+class TestTokensTypedAnalyzer : public irs::analysis::analyzer {
+ public:
+  static constexpr irs::string_ref type_name() noexcept {
+    return "iresearch-tokens-typed";
+  }
+
+  static ptr make(irs::string_ref const& args) {
+    PTR_NAMED(TestTokensTypedAnalyzer, ptr, args);
+    return ptr;
+  }
+
+  static bool normalize(irs::string_ref const& args, std::string& out) {
+    out.assign(args.c_str(), args.size());
+    return true;
+  }
+
+  explicit TestTokensTypedAnalyzer(irs::string_ref const& args) : irs::analysis::analyzer(irs::type<TestTokensTypedAnalyzer>::get()) {
+    VPackSlice slice(irs::ref_cast<irs::byte_type>(args).c_str());
+    if (slice.hasKey("type")) {
+      auto type = slice.get("type").stringRef();
+      if (type == "number") {
+        _returnType.value = arangodb::iresearch::AnalyzerValueType::Number;
+        _typedValue = arangodb::aql::AqlValue(arangodb::aql::AqlValueHintDouble(1));
+        _vpackTerm.value = _typedValue.slice();
+      } else if (type == "bool") {
+         _returnType.value = arangodb::iresearch::AnalyzerValueType::Bool;
+      } else if (type == "string") {
+         _returnType.value = arangodb::iresearch::AnalyzerValueType::String;
+         _term.value = irs::ref_cast<irs::byte_type>(_strVal);
+      } else {
+        // Failure here means we have unexpected type
+        EXPECT_TRUE(false);
+      }
+    }
+  }
+
+  virtual bool reset(irs::string_ref const& data) override {
+    if (!data.null()) {
+      _strVal = data;
+    } else {
+      _strVal.clear();
+    }
+    return true;
+  }
+
+  virtual bool next() override {
+    if (!_strVal.empty()) {
+      switch (_returnType.value) {
+        case arangodb::iresearch::AnalyzerValueType::Bool:
+          _typedValue = arangodb::aql::AqlValue(arangodb::aql::AqlValueHintBool(_strVal.size() % 2 == 0));
+          _vpackTerm.value = _typedValue.slice();
+          break;
+        case arangodb::iresearch::AnalyzerValueType::Number:
+          _typedValue = arangodb::aql::AqlValue(arangodb::aql::AqlValueHintDouble(
+            static_cast<double>(_strVal.size() % 2)));
+          _vpackTerm.value = _typedValue.slice();
+          break;
+        case arangodb::iresearch::AnalyzerValueType::String:
+          _term.value = irs::ref_cast<irs::byte_type>(_strVal);
+          break;
+        default:
+          // New return type was added?
+          EXPECT_TRUE(false);
+          break;
+      }
+      _strVal.pop_back();
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  virtual irs::attribute* get_mutable(irs::type_info::type_id type) noexcept override {
+    if (type == irs::type<irs::term_attribute>::id()) {
+      return &_term;
+    }
+    if (type == irs::type<irs::increment>::id()) {
+      return &_inc;
+    }
+    if (type == irs::type<arangodb::iresearch::AnalyzerValueTypeAttribute>::id()) {
+      return &_returnType;
+    }
+    if (type == irs::type<arangodb::iresearch::VPackTermAttribute>::id()) {
+      return &_vpackTerm;
+    }
+    return nullptr;
+  }
+
+ private:
+  std::string _strVal;
+  irs::term_attribute _term;
+  arangodb::iresearch::VPackTermAttribute _vpackTerm;
+  irs::increment _inc;
+  arangodb::iresearch::AnalyzerValueTypeAttribute _returnType;
+  arangodb::aql::AqlValue _typedValue;
+};
+
+REGISTER_ANALYZER_VPACK(TestTokensTypedAnalyzer, TestTokensTypedAnalyzer::make,
+                        TestTokensTypedAnalyzer::normalize);
+
+
 struct Analyzer {
   irs::string_ref type;
   VPackSlice properties;
   irs::flags features;
 
   Analyzer() = default;
-  Analyzer(irs::string_ref const& t, irs::string_ref const& p,
+  Analyzer(irs::string_ref const t, irs::string_ref const p,
            irs::flags const& f = irs::flags::empty_instance())
       : type(t), features(f) {
     if (p.null()) {
       properties = VPackSlice::nullSlice();
     } else {
-      propBuilder = VPackParser::fromJson(p);
+      propBuilder = VPackParser::fromJson(p.c_str(), p.size());
       properties = propBuilder->slice();
     }
   }
@@ -1301,8 +1403,6 @@ TEST_F(IResearchAnalyzerFeatureCoordinatorTest, test_ensure_index_add_factory) {
         "\", \"isSystem\": true, \"shards\": { }, \"type\": 2 }");  // 'id' and 'shards' required for coordinator tests
     auto collectionId = std::to_string(42);
 
-    //    ClusterCommMock clusterComm(server.server());
-    //    auto scopedClusterComm = ClusterCommMock::setInstance(clusterComm);
     auto& ci = server.getFeature<arangodb::ClusterFeature>().clusterInfo();
 
     std::shared_ptr<arangodb::LogicalCollection> logicalCollection;
@@ -1924,7 +2024,8 @@ TEST_F(IResearchAnalyzerFeatureTest, test_persistence_remove_existing_records) {
         EXPECT_TRUE(irs::analysis::analyzers::normalize(
             expectedProperties, analyzer->type(), irs::type<irs::text_format::vpack>::get(),
             arangodb::iresearch::ref<char>(
-                VPackParser::fromJson(itr->second.second)->slice()),
+                VPackParser::fromJson(itr->second.second.c_str(),
+                                      itr->second.second.size())->slice()),
             false));
 
         EXPECT_EQUAL_SLICES(arangodb::iresearch::slice(expectedProperties),
@@ -2095,11 +2196,12 @@ TEST_F(IResearchAnalyzerFeatureTest, test_remove) {
   server.server().getFeature<arangodb::ClusterFeature>().agencyCache().applyTestTransaction(
     bogus);
 
-  arangodb::network::ConnectionPool::Config poolConfig;
+  arangodb::network::ConnectionPool::Config poolConfig(server.server().getFeature<arangodb::MetricsFeature>());
   poolConfig.clusterInfo = &server.getFeature<arangodb::ClusterFeature>().clusterInfo();
   poolConfig.numIOThreads = 1;
   poolConfig.maxOpenConnections = 3;
   poolConfig.verifyHosts = false;
+  poolConfig.name = "IResearchAnalyzerFeatureTest";
 
   AsyncAgencyStorePoolMock pool(server.server(), poolConfig);
   arangodb::AgencyCommHelper::initialize("arango");
@@ -2704,6 +2806,16 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
                    .emplace(result, arangodb::StaticStrings::SystemDatabase + "::test_analyzer",
                             "TestAnalyzer", VPackParser::fromJson("\"abc\"")->slice())
                    .ok()));
+  ASSERT_TRUE(
+      (true == analyzers
+                   .emplace(result, arangodb::StaticStrings::SystemDatabase + "::test_number_analyzer",
+                            "iresearch-tokens-typed", VPackParser::fromJson("{\"type\":\"number\"}")->slice())
+                   .ok()));
+  ASSERT_TRUE(
+      (true == analyzers
+                   .emplace(result, arangodb::StaticStrings::SystemDatabase + "::test_bool_analyzer",
+                            "iresearch-tokens-typed", VPackParser::fromJson("{\"type\":\"bool\"}")->slice())
+                   .ok()));
   ASSERT_FALSE(!result.first);
 
   arangodb::SingleCollectionTransaction trx(
@@ -2744,9 +2856,60 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
     bool mustDestroy;
     auto entry = result->at(0, mustDestroy, false);
     EXPECT_TRUE(entry.isString());
-    std::string value = arangodb::iresearch::getStringRef(entry.slice());
+    auto value = entry.slice().copyString();
     EXPECT_EQ(data, value);
   }
+
+  // test typed analyzer tokenization BTS-357
+  {
+    std::string analyzer(arangodb::StaticStrings::SystemDatabase +
+                         "::test_number_analyzer");
+    irs::string_ref data("123");
+    VPackFunctionParametersWrapper args;
+    args->emplace_back(data.c_str(), data.size());
+    args->emplace_back(analyzer.c_str(), analyzer.size());
+    AqlValueWrapper result(impl(&exprCtx, node, *args));
+    ASSERT_TRUE(result->isArray());
+    ASSERT_EQ(3, result->length());
+    std::string expected123[] = {
+      "oL/wAAAAAAAA", "sL/wAAAAAA==", "wL/wAAA=", "0L/w",
+      "oIAAAAAAAAAA", "sIAAAAAAAA==", "wIAAAAA=", "0IAA",
+      "oL/wAAAAAAAA", "sL/wAAAAAA==", "wL/wAAA=", "0L/w"};
+    for (size_t i = 0; i < result->length(); ++i) {
+      bool mustDestroy;
+      auto entry = result->at(i, mustDestroy, false).slice();
+      ASSERT_TRUE(entry.isArray());
+      ASSERT_EQ(4, entry.length());
+      for (size_t j = 0; j < entry.length(); ++j) {
+        auto actual = entry.at(j);
+        ASSERT_TRUE(actual .isString());
+        ASSERT_EQ(expected123[i * 4 + j], actual.copyString());
+      }
+    }
+  }
+
+  // test typed analyzer tokenization BTS-357
+  {
+    std::string analyzer(arangodb::StaticStrings::SystemDatabase +
+                         "::test_bool_analyzer");
+    irs::string_ref data("123");
+    VPackFunctionParametersWrapper args;
+    args->emplace_back(data.c_str(), data.size());
+    args->emplace_back(analyzer.c_str(), analyzer.size());
+    AqlValueWrapper result(impl(&exprCtx, node, *args));
+    ASSERT_TRUE(result->isArray());
+    ASSERT_EQ(3, result->length());
+    std::string expected1[] = {"AA==", "/w==", "AA=="};
+    for (size_t i = 0; i < result->length(); ++i) {
+      bool mustDestroy;
+      auto entry = result->at(i, mustDestroy, false).slice();
+      ASSERT_TRUE(entry.isArray());
+      ASSERT_TRUE(entry.at(0).isString());
+      ASSERT_EQ(expected1[i], arangodb::iresearch::getStringRef(entry.at(0)));
+    }
+  }
+
+
 
   // test invalid arg count
   // Zero count (less than expected)
@@ -3065,7 +3228,7 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
         auto textTokens = nested.at(0);
         EXPECT_TRUE(textTokens.isArray());
         EXPECT_EQ(1, textTokens.length());
-        std::string value = arangodb::iresearch::getStringRef(textTokens.at(0));
+        auto value = textTokens.at(0).copyString();
         EXPECT_STREQ("test", value.c_str());
       }
       {
@@ -3143,8 +3306,8 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
       EXPECT_EQ(1, entry.length());
       auto textSlice = entry.at(0);
       EXPECT_TRUE(textSlice.isString());
-      std::string value = arangodb::iresearch::getStringRef(textSlice);
-      EXPECT_STREQ("jump", value.c_str());
+      auto value = textSlice.copyString();
+      EXPECT_EQ("jump", value);
     }
     {
       bool mustDestroy;
@@ -3157,8 +3320,8 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
         EXPECT_EQ(1, subArray.length());
         auto textSlice = subArray.at(0);
         EXPECT_TRUE(textSlice.isString());
-        std::string value = arangodb::iresearch::getStringRef(textSlice);
-        EXPECT_STREQ("quick", value.c_str());
+        auto value = textSlice.copyString();
+        EXPECT_EQ("quick", value);
       }
       {
         auto subArray = entry.at(1);
@@ -3166,8 +3329,8 @@ TEST_F(IResearchAnalyzerFeatureTest, test_tokens) {
         EXPECT_EQ(1, subArray.length());
         auto textSlice = subArray.at(0);
         EXPECT_TRUE(textSlice.isString());
-        std::string value = arangodb::iresearch::getStringRef(textSlice);
-        EXPECT_STREQ("dog", value.c_str());
+        auto value = textSlice.copyString();
+        EXPECT_EQ("dog", value);
       }
     }
   }

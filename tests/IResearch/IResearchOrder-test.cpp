@@ -83,8 +83,7 @@ void assertOrder(arangodb::application_features::ApplicationServer& server, bool
   TRI_vocbase_t vocbase(TRI_vocbase_type_e::TRI_VOCBASE_TYPE_NORMAL, testDBInfo(server));
 
   arangodb::aql::Query query(arangodb::transaction::StandaloneContext::Create(vocbase),
-                             arangodb::aql::QueryString(queryString), bindVars,
-                             std::make_shared<arangodb::velocypack::Builder>());
+                             arangodb::aql::QueryString(queryString), bindVars);
 
   auto const parseResult = query.parse();
   ASSERT_TRUE(parseResult.result.ok());
@@ -195,11 +194,11 @@ void assertOrderExecutionFail(arangodb::application_features::ApplicationServer&
 }
 
 void assertOrderParseFail(arangodb::application_features::ApplicationServer& server,
-                          std::string const& queryString, int parseCode) {
+                          std::string const& queryString, ErrorCode parseCode) {
   TRI_vocbase_t vocbase(TRI_vocbase_type_e::TRI_VOCBASE_TYPE_NORMAL, testDBInfo(server));
 
   arangodb::aql::Query query(arangodb::transaction::StandaloneContext::Create(vocbase), arangodb::aql::QueryString(queryString),
-                             nullptr, nullptr);
+                             nullptr);
 
   auto const parseResult = query.parse();
   ASSERT_EQ(parseCode, parseResult.result.errorNumber());
@@ -216,12 +215,13 @@ class IResearchOrderTest
       public arangodb::tests::LogSuppressor<arangodb::iresearch::TOPIC, arangodb::LogLevel::FATAL>,
       public arangodb::tests::IResearchLogSuppressor {
  protected:
-  StorageEngineMock engine;
   arangodb::application_features::ApplicationServer server;
+  StorageEngineMock engine;
   std::vector<std::pair<arangodb::application_features::ApplicationFeature&, bool>> features;
 
-  IResearchOrderTest() : engine(server), server(nullptr, nullptr) {
-
+  IResearchOrderTest()
+    : server(std::make_shared<arangodb::options::ProgramOptions>("", "", "", ""), nullptr),
+      engine(server) {
     arangodb::tests::init();
 
     // setup required application features
@@ -233,7 +233,11 @@ class IResearchOrderTest
     features.emplace_back(server.addFeature<arangodb::QueryRegistryFeature>(), false);
     features.emplace_back(server.addFeature<arangodb::ViewTypesFeature>(), false);  // required for IResearchFeature
     features.emplace_back(server.addFeature<arangodb::aql::AqlFunctionFeature>(), true);
-    features.emplace_back(server.addFeature<arangodb::iresearch::IResearchFeature>(), true);
+    {
+      auto& feature = features.emplace_back(server.addFeature<arangodb::iresearch::IResearchFeature>(), true).first;
+      feature.validateOptions(server.options());
+      feature.collectOptions(server.options());
+    }
     features.emplace_back(server.addFeature<arangodb::DatabaseFeature>(), false); // required for calculationVocbase
 
     for (auto& f : features) {
@@ -252,8 +256,9 @@ class IResearchOrderTest
     auto& functions = server.getFeature<arangodb::aql::AqlFunctionFeature>();
     arangodb::aql::Function invalid("INVALID", "|.",
                                     arangodb::aql::Function::makeFlags(
-                                        arangodb::aql::Function::Flags::CanRunOnDBServer));
-
+                                        arangodb::aql::Function::Flags::CanRunOnDBServerCluster,
+                                        arangodb::aql::Function::Flags::CanRunOnDBServerOneShard),
+                                    nullptr);
     functions.add(invalid);
   }
 

@@ -101,7 +101,7 @@ TEST_P(tfidf_test, make_from_bool) {
     ASSERT_NE(nullptr, scorer);
     auto& tfidf = dynamic_cast<irs::tfidf_sort&>(*scorer);
     ASSERT_EQ(true, tfidf.normalize());
-    ASSERT_FALSE(tfidf.use_boost_as_score());
+    ASSERT_EQ(irs::tfidf_sort::BOOST_AS_SCORE(), tfidf.use_boost_as_score());
   }
 
   // invalid `withNorms` argument
@@ -207,7 +207,7 @@ TEST_P(tfidf_test, test_phrase) {
 
     class string_field : public templates::string_field {
      public:
-      string_field(const irs::string_ref& name, const irs::string_ref& value)
+      string_field(const std::string& name, const irs::string_ref& value)
         : templates::string_field(name, value) {
       }
 
@@ -226,7 +226,7 @@ TEST_P(tfidf_test, test_phrase) {
 
       // not analyzed field
       doc.insert(std::make_shared<string_field>(
-        irs::string_ref(name),
+        name,
         data.str
       ));
     }
@@ -1186,7 +1186,7 @@ TEST_P(tfidf_test, test_make) {
     ASSERT_NE(nullptr, scorer);
     auto& scr = dynamic_cast<irs::tfidf_sort&>(*scorer);
     ASSERT_FALSE(scr.normalize());
-    ASSERT_EQ(false, scr.use_boost_as_score());
+    ASSERT_EQ(irs::tfidf_sort::BOOST_AS_SCORE(), scr.use_boost_as_score());
   }
 
   // invalid args
@@ -1201,7 +1201,7 @@ TEST_P(tfidf_test, test_make) {
     ASSERT_NE(nullptr, scorer);
     auto& scr = dynamic_cast<irs::tfidf_sort&>(*scorer);
     ASSERT_EQ(true, scr.normalize());
-    ASSERT_EQ(false, scr.use_boost_as_score());
+    ASSERT_EQ(irs::tfidf_sort::BOOST_AS_SCORE(), scr.use_boost_as_score());
   }
 
   // invalid value (non-bool)
@@ -1216,7 +1216,7 @@ TEST_P(tfidf_test, test_make) {
     ASSERT_NE(nullptr, scorer);
     auto& scr = dynamic_cast<irs::tfidf_sort&>(*scorer);
     ASSERT_EQ(true, scr.normalize());
-    ASSERT_EQ(false, scr.use_boost_as_score());
+    ASSERT_EQ(irs::tfidf_sort::BOOST_AS_SCORE(), scr.use_boost_as_score());
   }
 
   // invalid values (withNorms)

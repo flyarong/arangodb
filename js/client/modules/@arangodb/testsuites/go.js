@@ -64,7 +64,7 @@ const testPaths = {
 
 function goDriver (options) {
   function runInGoTest (options, instanceInfo, file, addArgs) {
-    process.env['TEST_ENDPOINTS'] = instanceInfo.url;
+    process.env['TEST_ENDPOINTS'] = instanceInfo.urls.join(',');
     process.env['TEST_AUTHENTICATION'] = 'basic:root:';
     let jwt = pu.getJwtSecret(options);
     if (jwt) {
@@ -213,7 +213,9 @@ function goDriver (options) {
   }
   localOptions['server.jwt-secret'] = 'haxxmann';
 
-  return tu.performTests(localOptions, [ 'go_test.js'], 'go_test', runInGoTest);
+  let rc = tu.performTests(localOptions, [ 'go_test.js'], 'go_test', runInGoTest);
+  options.cleanup = options.cleanup && localOptions.cleanup;
+  return rc;
 }
 
 

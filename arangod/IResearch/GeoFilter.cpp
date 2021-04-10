@@ -1,7 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -33,6 +34,7 @@
 #include "search/collectors.hpp"
 #include "search/disjunction.hpp"
 #include "search/multiterm_query.hpp"
+#include "utils/memory.hpp"
 
 #include "Basics/voc-errors.h"
 #include "Geo/GeoParams.h"
@@ -351,7 +353,7 @@ std::pair<GeoStates, irs::bstring> prepareStates(
 
   std::pair<GeoStates, irs::bstring> res(
     std::piecewise_construct,
-    std::forward_as_tuple(index.size()),
+    std::forward_as_tuple(index),
     std::forward_as_tuple(order.stats_size(), 0));
 
   auto const size = sortedTerms.size();
@@ -392,6 +394,7 @@ std::pair<GeoStates, irs::bstring> prepareStates(
     state.reader = reader;
     state.states = std::move(termStates);
     state.storedField = segment.column_reader(field);
+    termStates.clear();
   }
 
   fieldStats.finish(const_cast<irs::byte_type*>(res.second.data()), index);

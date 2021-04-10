@@ -88,7 +88,7 @@ option(USE_MINIMAL_DEBUGINFO "use minimal debug symbols for builds containing de
 # ARANGODB_RPM_REVISION
 
 set(ARANGODB_VERSION_MAJOR "3")
-set(ARANGODB_VERSION_MINOR "8")
+set(ARANGODB_VERSION_MINOR "9")
 
 # when building the nightly ARANGODB_VERSION_PATCH will be set
 if (NOT DEFINED ARANGODB_VERSION_PATCH)
@@ -399,6 +399,35 @@ else ()
   set(HAVE_ARANGODB_BUILD_REPOSITORY "0")
 endif()
 
+if (DEFINED GIT_EXE AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/enterprise/.git")
+  execute_process(
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+
+    COMMAND ${GIT_EXE} describe --all --tags --long --dirty=-dirty
+    OUTPUT_VARIABLE GIT_OUTPUT)
+
+  # this may fail on shallow clones that only knows about a limited number of commits.
+  # if there is an older merged revision the head, it may not be available to git.
+  if (NOT GIT_OUTPUT)
+      set(ENTERPRISE_BUILD_REPOSITORY "GIT FAILED TO RETRIEVE THE VERSION - SHALLOW CLONE?")
+      set(HAVE_ENTERPRISE_BUILD_REPOSITORY "1")
+    else()
+      string(STRIP ${GIT_OUTPUT} REPOSITORY_VERSION)
+      set(ENTERPRISE_BUILD_REPOSITORY ${REPOSITORY_VERSION})
+      set(HAVE_ENTERPRISE_BUILD_REPOSITORY "1")
+    endif()
+else ()
+  set(ENTERPRISE_BUILD_REPOSITORY "")
+  set(HAVE_ENTERPRISE_BUILD_REPOSITORY "0")
+endif()
+
+if (DEFINED OSKAR_BUILD_REPOSITITORY)
+  set(HAVE_OSKAR_BUILD_REPOSITORY "1")
+else ()
+  set(OSKAR_BUILD_REPOSITORY "")
+  set(HAVE_OSKAR_BUILD_REPOSITORY "0")
+endif ()
+
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/Basics/build-repository.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/lib/Basics/build-repository.h"
@@ -549,15 +578,15 @@ else ()
 endif ()
 
 if (CMAKE_COMPILER_IS_GNUCC)
-  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.3")
-    message(WARNING "ArangoDB requires g++ 9.3 or newer, building with older compiler versions is unsupported")
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "10.0")
+    message(WARNING "ArangoDB requires g++ 10.0 or newer, building with older compiler versions is unsupported")
   elseif(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "10.9.9")
     message(WARNING "ArangoDB doesn't support g++ 11.0 yet, building with newer compiler versions is unsupported")
   endif()
   set(BASE_C_FLAGS "${BASE_C_FLAGS}")
 endif ()
 
-if (CMAKE_COMPILER_IS_GNUCC OR APPLE)
+if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_CLANG OR APPLE)
   set(BASE_CXX_FLAGS "${BASE_CXX_FLAGS} -std=c++17")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
   # MSVC2018.1 - MSVC2018.7 does not correctly support alignas()
@@ -605,13 +634,6 @@ if (MSVC)
   add_definitions("-D_CRT_SECURE_NO_WARNINGS=1")
   add_definitions("-DFD_SETSIZE=8192")
   add_definitions("-DU_STATIC_IMPLEMENTATION=1")
-  add_definitions("-D_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS=1") # try to remove this when
-                                                                 # boost is upgraded to 1.70 or later
-
-  # https://blogs.msdn.microsoft.com/vcblog/2016/04/14/stl-fixes-in-vs-2015-update-2/
-  # https://connect.microsoft.com/VisualStudio/feedback/details/1892487
-  # http://lists.boost.org/boost-users/2016/04/85968.php
-  add_definitions("-D_ENABLE_ATOMIC_ALIGNMENT_FIX")
 
   # bcrypt is needed for SSL
   set(MSVC_LIBS Shlwapi.lib;crypt32.lib;bcrypt.lib;WINMM.LIB;Ws2_32.lib;Psapi.lib)
@@ -703,28 +725,13 @@ set(ARCHITECTURE_OPTIMIZATIONS "\"${Vc_ARCHITECTURE_FLAGS}\"")
 ## BACKTRACE
 ################################################################################
 
-option(USE_BACKTRACE
-  "whether we should try to generate c-level stacktraces"
-  OFF
-)
-
-# iresearch uses backtrace anyway, so we need to find and link libexecinfo
+# iresearch uses backtrace, so we need to find and link libexecinfo
 # for the case that we are on libmusl and not on glibc
 if (NOT MSVC)
   find_package(Backtrace)
 endif()
 
-if (USE_BACKTRACE)
-  if (MSVC)
-    set(BT_LIBS "Dbghelp" CACHE PATH "Debug Helper libraries")
-  else ()
-    set(BT_LIBS ${Backtrace_LIBRARY} CACHE PATH "Debug Helper libraries")
-  endif ()
-
-  add_definitions("-DARANGODB_ENABLE_BACKTRACE=1")
-else ()
-  set(BT_LIBS ${Backtrace_LIBRARY} CACHE PATH "Debug Helper libraries")
-endif ()
+set(BT_LIBS ${Backtrace_LIBRARY} CACHE PATH "Debug Helper libraries")
 
 ################################################################################
 ## ASSEMBLER OPTIMIZATIONS
@@ -935,7 +942,13 @@ else () # NOT MSVC
   elseif (CMAKE_COMPILER_IS_CLANG)
     message(STATUS "Compiler type CLANG: ${CMAKE_CXX_COMPILER}")
     set(BASE_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-deprecated-declarations ${BASE_FLAGS}")
-  
+    set(EXTRA_CXX_FLAGS "-Wnon-virtual-dtor")
+    
+    if (NOT DARWIN AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11.0")
+      # clang 11 and higher supports -Wsuggest-override. older versions don't
+      set(EXTRA_CXX_FLAGS "-Wsuggest-override ${EXTRA_CXX_FLAGS}")
+    endif ()
+
     if (DARWIN AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12.0" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12.1")
       # With the introduction of apple clang version 12.0.0 (clang-1200.0.32.2) the warning "range-loop-analysis" is now
       # enabled by default or changed analysis behaviour. The compiler now complains about "wrong" usage of
@@ -946,9 +959,8 @@ else () # NOT MSVC
       # Since we're stopping compilation on Apple in any warning case, we need to temporary disable that warning and
       # check upcoming versions if the compiler behaviour will be fixed.
       set(EXTRA_C_FLAGS "-Wno-range-loop-analysis")
-      set(EXTRA_CXX_FLAGS "-Wno-range-loop-analysis")
-    endif()
-    set(EXTRA_CXX_FLAGS "${EXTRA_CXX_FLAGS} -Wnon-virtual-dtor")
+      set(EXTRA_CXX_FLAGS "${EXTRA_CXX_FLAGS} -Wno-range-loop-analysis")
+    endif ()
   else ()
     # unknown compiler
     message(STATUS "Compiler type UNKNOWN: ${CMAKE_CXX_COMPILER}")
@@ -961,7 +973,7 @@ else () # NOT MSVC
   # flags for builds with debug symbols
   if (USE_MINIMAL_DEBUGINFO)
     # minimal debug symbols
-    set(DEBUGINFO_FLAGS "-g1 -feliminate-unused-debug-symbols")
+    set(DEBUGINFO_FLAGS "-g1 -gno-column-info -gz")
   else ()
     # full debug symbols
     set(DEBUGINFO_FLAGS "-g")
@@ -1242,9 +1254,12 @@ endif()
 ################################################################################
 
 if (USE_MAINTAINER_MODE)
+  # If "make clean" removes these files, afterwards neither "make" nor "cmake" work any more.
+  set_directory_properties(PROPERTIES CLEAN_NO_CUSTOM "On")
+
   set(ERROR_FILES
     lib/Basics/voc-errors.h
-    lib/Basics/voc-errors.cpp
+    lib/Basics/error-registry.h
     js/common/bootstrap/errors.js
   )
 
@@ -1257,7 +1272,7 @@ if (USE_MAINTAINER_MODE)
       COMMAND ${PYTHON_EXECUTABLE} ./utils/generateErrorfile.py ./${ERRORS_DAT} ./${m}.tmp
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ./${m}.tmp ./${m}
       COMMAND ${CMAKE_COMMAND} -E remove ./${m}.tmp
-      DEPENDS ${CMAKE_SOURCE_DIR}/${ERRORS_DAT}
+      DEPENDS ${CMAKE_SOURCE_DIR}/${ERRORS_DAT} ./utils/generateErrorfile.py
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       COMMENT  "Building errors files ${m}"
       VERBATIM
@@ -1270,7 +1285,6 @@ if (USE_MAINTAINER_MODE)
 
   set(EXIT_CODE_FILES
     lib/Basics/exitcodes.h
-    lib/Basics/exitcodes.cpp
     js/common/bootstrap/exitcodes.js
     Installation/Windows/Plugins/exitcodes.nsh
   )
@@ -1284,7 +1298,7 @@ if (USE_MAINTAINER_MODE)
       COMMAND ${PYTHON_EXECUTABLE} ./utils/generateExitCodesFiles.py ./${EXIT_CODES_DAT} ./${m}.tmp
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ./${m}.tmp ./${m}
       COMMAND ${CMAKE_COMMAND} -E remove ./${m}.tmp
-      DEPENDS ${CMAKE_SOURCE_DIR}/${EXIT_CODES_DAT}
+      DEPENDS ${CMAKE_SOURCE_DIR}/${EXIT_CODES_DAT} ./utils/generateExitCodesFiles.py
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       COMMENT  "Building exitcode files ${m}"
       VERBATIM

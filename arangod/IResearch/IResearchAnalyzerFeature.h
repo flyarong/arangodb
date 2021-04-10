@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -50,10 +50,11 @@
 
 #include "ApplicationFeatures/ApplicationFeature.h"
 #include "Auth/Common.h"
+#include "Basics/ReadWriteLock.h"
 #include "Basics/Result.h"
 #include "Basics/Identifier.h" // this include only need to make clang see << operator for Identifier
 #include "Cluster/ClusterTypes.h"
-#include "IResearch/IResearchVPackFormat.h"
+#include "IResearchAnalyzerValueTypeAttribute.h"
 #include "Scheduler/SchedulerFeature.h"
 
 struct TRI_vocbase_t; // forward declaration
@@ -66,20 +67,6 @@ class ApplicationServer;
 
 namespace arangodb {
 namespace iresearch {
-
-enum class AnalyzerValueType : uint64_t {
-  Undefined = 0,
-  // Primitive types
-  String    = 1,
-  Number    = 1 << 1,
-  Bool      = 1 << 2,
-  Null      = 1 << 3,
-  // Complex types
-  Array     = 1 << 4,
-  Object    = 1 << 5,
-};
-
-ENABLE_BITMASK_ENUM(AnalyzerValueType);
 
 // thread-safe analyzer pool
 class AnalyzerPool : private irs::util::noncopyable {
@@ -394,7 +381,7 @@ class IResearchAnalyzerFeature final
   Analyzers _analyzers; // all analyzers known to this feature (including static)
                         // (names are stored with expanded vocbase prefixes)
   std::unordered_map<std::string, AnalyzersRevision::Revision> _lastLoad; // last revision for database was loaded
-  mutable irs::async_utils::read_write_mutex _mutex; // for use with member '_analyzers', '_lastLoad'
+  mutable basics::ReadWriteLock _mutex; // for use with member '_analyzers', '_lastLoad'
 
   static Analyzers const& getStaticAnalyzers();
 
@@ -410,8 +397,8 @@ class IResearchAnalyzerFeature final
   Result emplaceAnalyzer( // emplace
     EmplaceAnalyzerResult& result, // emplacement result on success (out-param)
     iresearch::IResearchAnalyzerFeature::Analyzers& analyzers, // analyzers
-    irs::string_ref const& name, // analyzer name
-    irs::string_ref const& type, // analyzer type
+    irs::string_ref const name, // analyzer name
+    irs::string_ref const type, // analyzer type
     VPackSlice const properties, // analyzer properties
     irs::flags const& features, // analyzer features
     AnalyzersRevision::Revision revision); // analyzer revision

@@ -30,8 +30,9 @@
   #include "text_token_normalizing_stream.hpp"
   #include "text_token_stemming_stream.hpp"
   #include "text_token_stream.hpp"
-  #include "token_masking_stream.hpp"
+  #include "token_stopwords_stream.hpp"
   #include "pipeline_token_stream.hpp"
+  #include "segmentation_token_stream.hpp"
 #endif
 
 #include "analysis/analyzers.hpp"
@@ -148,7 +149,6 @@ namespace analysis {
     return normalizer ? normalizer(args, out) : false;
   } catch (...) {
     IR_FRMT_ERROR("Caught exception while normalizing analyzer '%s' arguments", name.c_str());
-    IR_LOG_EXCEPTION();
   }
 
   return false;
@@ -175,8 +175,6 @@ namespace analysis {
       "Caught exception while getting an analyzer instance",
       e.what());
   } catch (...) {
-    IR_LOG_EXCEPTION();
-
     return result::make<result::INVALID_ARGUMENT>(
       "Caught exception while getting an analyzer instance");
   }
@@ -198,7 +196,6 @@ namespace analysis {
     return factory ? factory(args) : nullptr;
   } catch (...) {
     IR_FRMT_ERROR("Caught exception while getting an analyzer instance");
-    IR_LOG_EXCEPTION();
   }
 
   return nullptr;
@@ -211,8 +208,9 @@ namespace analysis {
     irs::analysis::text_token_normalizing_stream::init();
     irs::analysis::text_token_stemming_stream::init();
     irs::analysis::text_token_stream::init();
-    irs::analysis::token_masking_stream::init();
+    irs::analysis::token_stopwords_stream::init();
     irs::analysis::pipeline_token_stream::init();
+    irs::analysis::segmentation_token_stream::init();
   #endif
 }
 

@@ -1,6 +1,12 @@
 include_directories(.)
 
 # ----------------------------------------
+# Greenspun tests
+# ----------------------------------------
+
+add_subdirectory(Greenspun)
+
+# ----------------------------------------
 # Fuerte tests
 # ----------------------------------------
 
@@ -53,6 +59,7 @@ endif ()
 set(ARANGODB_TESTS_COMMON_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/IResearchLinkMock.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/LogLevels.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/PreparedResponseConnectionPool.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/StorageEngineMock.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/Servers.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/Basics/icu-helper.cpp
@@ -78,9 +85,10 @@ set(ARANGODB_TESTS_SOURCES
   Agency/RemoveFollowerTest.cpp
   Agency/StoreTest.cpp
   Agency/SupervisionTest.cpp
-  Aql/BlockCollector.cpp
+  Agency/TransactionBuilderTests.cpp
   Aql/AqlCallListTest.cpp
   Aql/AqlExecutorTestCase.cpp
+  Aql/AqlSharedExecutionBlockImplTest.cpp
   Aql/AqlHelper.cpp
   Aql/AqlItemBlockInputRangeTest.cpp
   Aql/AqlItemBlockTest.cpp
@@ -88,7 +96,10 @@ set(ARANGODB_TESTS_SOURCES
   Aql/AqlItemRowPrinter.cpp
   Aql/AqlItemRowTest.cpp
   Aql/AqlShadowRowTest.cpp
+  Aql/AqlValueMemoryLayoutTest.cpp
   Aql/AttributeNamePathTest.cpp
+  Aql/BitFunctionsTest.cpp
+  Aql/BlockCollector.cpp
   Aql/CalculationExecutorTest.cpp
   Aql/CountCollectExecutorTest.cpp
   Aql/DateFunctionsTest.cpp
@@ -120,6 +131,7 @@ set(ARANGODB_TESTS_SOURCES
   Aql/NoResultsExecutorTest.cpp
   Aql/ProjectionsTest.cpp
   Aql/QueryHelper.cpp
+  Aql/QueryCursorTest.cpp
   Aql/RegisterPlanTest.cpp
   Aql/RemoteExecutorTest.cpp
   Aql/RemoveExecutorTest.cpp
@@ -152,21 +164,22 @@ set(ARANGODB_TESTS_SOURCES
   Basics/files-test.cpp
   Basics/fpconv-test.cpp
   Basics/hashes-test.cpp
-  Basics/json-test.cpp
   Basics/overload-test.cpp
   Basics/priorityqueue-test.cpp
   Basics/string-buffer-test.cpp
   Basics/string-test.cpp
   Basics/string-utf8-normalize-test.cpp
   Basics/string-utf8-test.cpp
-  Basics/vector-test.cpp
   Basics/ApplicationServerTest.cpp
   Basics/AttributeNameParserTest.cpp
+  Basics/CpuUsageSnapshotTest.cpp
   Basics/EndpointTest.cpp
   Basics/FixedSizeAllocatorTest.cpp
   Basics/InifileParserTest.cpp
   Basics/LoggerTest.cpp
+  Basics/MemoryUsageTest.cpp
   Basics/NumberUtilsTest.cpp
+  Basics/ParametersTest.cpp
   Basics/RandomTest.cpp
   Basics/ReadWriteLockTest.cpp
   Basics/SpinLockTest.cpp
@@ -190,7 +203,7 @@ set(ARANGODB_TESTS_SOURCES
   Cache/TransactionsWithBackingStore.cpp
   Cluster/AgencyPathsTest.cpp
   Cluster/ClusterHelpersTest.cpp
-  Cluster/ClusterRepairsTest.cpp
+  Cluster/ClusterInfoTest.cpp
   Cluster/RebootTrackerTest.cpp
   Cluster/QueryAnalyzerRevisions-test.cpp
   Containers/EnumerateTest.cpp
@@ -205,10 +218,20 @@ set(ARANGODB_TESTS_SOURCES
   Geo/NearUtilsTest.cpp
   Geo/ShapeContainerTest.cpp
   Graph/ClusterTraverserCacheTest.cpp
+  Graph/TraverserCacheTest.cpp
   Graph/ConstantWeightShortestPathFinder.cpp
+  Graph/GenericGraphProviderTest.cpp
+  Graph/GraphMockProviderInstances.cpp
   Graph/GraphTestTools.cpp
   Graph/KPathFinderTest.cpp
   Graph/KShortestPathsFinder.cpp
+  Graph/MockGraph.cpp
+  Graph/MockGraphProvider.cpp
+  Graph/PathStoreTest.cpp
+  Graph/PathValidatorTest.cpp
+  Graph/QueueTest.cpp
+  Graph/SingleServerProviderTest.cpp
+  Greenspun/PrimitivesTest.cpp
   HotBackup/HotBackupCoordinatorTest.cpp
   ${ARANGODB_IRESEARCH_TESTS_SOURCES}
   Maintenance/MaintenanceFeatureTest.cpp
@@ -217,6 +240,7 @@ set(ARANGODB_TESTS_SOURCES
   ${RCFILE}
   Metrics/MetricsTest.cpp
   Metrics/MetricsFeatureTest.cpp
+  Metrics/MetricsServerTest.cpp
   Network/ConnectionPoolTest.cpp
   Network/MethodsTest.cpp
   Network/UtilsTest.cpp
@@ -226,6 +250,7 @@ set(ARANGODB_TESTS_SOURCES
   RestHandler/RestDocumentHandler-test.cpp
   RestHandler/RestUsersHandler-test.cpp
   RestHandler/RestViewHandler-test.cpp
+  RestHandler/VstResponse-test.cpp
   RestServer/FlushFeature-test.cpp
   RocksDBEngine/Endian.cpp
   RocksDBEngine/KeyTest.cpp
@@ -244,6 +269,7 @@ set(ARANGODB_TESTS_SOURCES
   V8Server/v8-users-test.cpp
   V8Server/v8-views-test.cpp
   VocBase/vocbase-test.cpp
+  VocBase/KeyGenerator-test.cpp
   VocBase/LogicalDataSource-test.cpp
   VocBase/LogicalView-test.cpp
   VocBase/VersionTest.cpp
@@ -294,11 +320,11 @@ target_include_directories(arangodbtests PRIVATE
   ${INCLUDE_DIRECTORIES}
 )
 
-if(MSVC AND FAIL_ON_WARNINGS)
+if(MSVC AND USE_FAIL_ON_WARNINGS)
   target_compile_options(arangodbtests PRIVATE /WX /D_WINSOCK_DEPRECATED_NO_WARNINGS)
 endif()
 
-if (DARWIN AND FAIL_ON_WARNINGS)
+if (DARWIN AND USE_FAIL_ON_WARNINGS)
   # Missing Braces is broken in older CLangs - disable them here.
   target_compile_options(arangodbtests PRIVATE -Werror -Wno-error=deprecated-declarations -Wno-missing-braces)
 endif()

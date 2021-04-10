@@ -85,8 +85,12 @@ class ConfigBuilder {
   }
 
   setAuth(username, password) {
-    this.config['server.username'] = username;
-    this.config['server.password'] = password;
+    if (username !== undefined) {
+      this.config['server.username'] = username;
+    }
+    if (password !== undefined) {
+      this.config['server.password'] = password;
+    }
   }
   setEndpoint(endpoint) { this.config['server.endpoint'] = endpoint; }
   setDatabase(database) {
@@ -118,6 +122,10 @@ class ConfigBuilder {
       this.config['create-database'] = 'false';
     }
   }
+  setJwtFile(file) {
+    delete this.config['server.password'];
+    this.config['server.jwt-secret-keyfile'] = file;
+  }
   setMaskings(dir) {
     if (this.type !== 'dump') {
       throw '"maskings" is not supported for binary: ' + this.type;
@@ -135,6 +143,16 @@ class ConfigBuilder {
       this.config['--compress-output'] = false;
     }
   }
+  activateEnvelopes() {
+    if (this.type === 'dump') {
+      this.config['--envelope'] = true;
+    }
+  }
+  deactivateEnvelopes() {
+    if (this.type === 'dump') {
+      this.config['--envelope'] = false;
+    }
+  }
   setRootDir(dir) { this.rootDir = dir; }
   restrictToCollection(collection) {
     if (this.type !== 'restore' && this.type !== 'dump') {
@@ -149,6 +167,24 @@ class ConfigBuilder {
   haveSetAllDatabases() {
     return this.config.hasOwnProperty('all-databases');
   }
+  activateFailurePoint() {
+    if (this.type !== "restore") {
+      throw '"activateFailurePoint" is not supported for binary: ' + this.type;
+    }
+    this.config['fail-after-update-continue-file'] = 'true';
+  }
+  enableContinue() {
+    if (this.type !== "restore") {
+      throw '"enableContinue" is not supported for binary: ' + this.type;
+    }
+    this.config['continue'] = 'true';
+  }
+  deactivateFailurePoint() {
+    delete this.config['fail-after-update-continue-file'];
+  }
+  disableContinue() {
+    delete this.config['continue'];
+  }
   toArgv() { return internal.toArgv(this.config); }
 
   getExe() { return this.executable; }
@@ -161,7 +197,15 @@ class ConfigBuilder {
 
 const createBaseConfigBuilder = function (type, options, instanceInfo, database = '_system') {
   const cfg = new ConfigBuilder(type);
-  cfg.setAuth(options.username, options.password);
+  if (!options.jwtSecret) {
+    cfg.setAuth(options.username, options.password);
+  }
+  if (options.hasOwnProperty('logForceDirect')) {
+    cfg.config['log.force-direct'] = true;
+  }
+  if (options.hasOwnProperty('serverRequestTimeout')) {
+    cfg.config['server.request-timeout'] = options.serverRequestTimeout;
+  }
   cfg.setDatabase(database);
   cfg.setEndpoint(instanceInfo.endpoint);
   cfg.setRootDir(instanceInfo.rootDir);
@@ -176,6 +220,7 @@ if (platform.substr(0, 3) === 'win') {
 let serverCrashedLocal = false;
 let serverFailMessagesLocal = "";
 let cleanupDirectories = [];
+let isEnterpriseClient = false;
 
 let BIN_DIR;
 let ARANGOBACKUP_BIN;
@@ -214,8 +259,8 @@ function coverageEnvironment () {
     result.push(
       name +
       "=" +
-      process.env[name] + 
-      "/" + 
+      process.env[name] +
+      "/" +
       crypto.md5(String(internal.time() + Math.random())));
   }
 
@@ -296,12 +341,22 @@ function setupBinaries (builddir, buildType, configDir) {
     ARANGOEXPORT_BIN,
     ARANGOSH_BIN
   ];
-  
+
   if (global.ARANGODB_CLIENT_VERSION) {
     let version = global.ARANGODB_CLIENT_VERSION(true);
     if (version.hasOwnProperty('enterprise-version')) {
+      isEnterpriseClient = true;
       checkFiles.push(ARANGOBACKUP_BIN);
     }
+    ["asan", "ubsan", "lsan", "tsan"].forEach((san) => {
+      let envName = san.toUpperCase() + "_OPTIONS";
+      let fileName = san + "_arangodb_suppressions.txt";
+      if (!process.env.hasOwnProperty(envName) &&
+          fs.exists(fileName)) {
+        // print('preparing ' + san + ' environment');
+        process.env[envName] = `suppressions=${fs.join(fs.makeAbsolute(''), fileName)}`;
+      }
+    });
   }
 
   for (let b = 0; b < checkFiles.length; ++b) {
@@ -386,7 +441,7 @@ function readImportantLogLines (logPath) {
 }
 
 // //////////////////////////////////////////////////////////////////////////////
-// / @brief cleans up the database direcory
+// / @brief cleans up the database directory
 // //////////////////////////////////////////////////////////////////////////////
 
 function cleanupLastDirectory (options) {
@@ -563,6 +618,15 @@ function getProcessStats(pid) {
       print(x.stack);
       throw x;
     }
+    /*
+     * rchar: 1409391
+     * wchar: 681539
+     * syscr: 3303
+     * syscw: 2969
+     * read_bytes: 0
+     * write_bytes: 0
+     * cancelled_write_bytes: 0
+     */
     let lineStart = 0;
     let maxBuffer = ioraw.length;
     for (let j = 0; j < maxBuffer; j++) {
@@ -573,6 +637,25 @@ function getProcessStats(pid) {
         processStats[x[0]] = parseInt(x[1]);
       }
     }
+    /* 
+     * sockets: used 1272
+     * TCP: inuse 27 orphan 0 tw 117 alloc 382 mem 25
+     * UDP: inuse 19 mem 17
+     * UDPLITE: inuse 0
+     * RAW: inuse 0
+     * FRAG: inuse 0 memory 0
+     */
+    ioraw = getSockStatFile(pid);
+    ioraw.split('\n').forEach(line => {
+      if (line.length > 0) {
+        let x = line.split(":");
+        let values = x[1].split(" ");
+        for (let k = 1; k < values.length; k+= 2) {
+          processStats['sockstat_' + x[0] + '_' + values[k]]
+            = parseInt(values[k + 1]);
+        }
+      }
+    });
   }
   return processStats;
 }
@@ -586,15 +669,28 @@ function initProcessStats(instanceInfo) {
 function getDeltaProcessStats(instanceInfo) {
   try {
     let deltaStats = {};
+    let deltaSum = {};
     instanceInfo.arangods.forEach((arangod) => {
       let newStats = getProcessStats(arangod.pid);
       let myDeltaStats = {};
       for (let key in arangod.stats) {
-        myDeltaStats[key] = newStats[key] - arangod.stats[key];
+        if (key.startsWith('sockstat_')) {
+          myDeltaStats[key] = newStats[key];
+        } else {
+          myDeltaStats[key] = newStats[key] - arangod.stats[key];
+        }
       }
       deltaStats[arangod.pid + '_' + arangod.role] = myDeltaStats;
       arangod.stats = newStats;
+      for (let key in myDeltaStats) {
+        if (deltaSum.hasOwnProperty(key)) {
+          deltaSum[key] += myDeltaStats[key];
+        } else {
+          deltaSum[key] = myDeltaStats[key];
+        }
+      }
     });
+    deltaStats['sum_servers'] = deltaSum;
     return deltaStats;
   }
   catch (x) {
@@ -614,6 +710,41 @@ function summarizeStats(deltaStats) {
     }
   }
   return sumStats;
+}
+
+// //////////////////////////////////////////////////////////////////////////////
+// / @brief aggregates information from /proc about the SUT
+// //////////////////////////////////////////////////////////////////////////////
+
+function getMemProfSnapshot(instanceInfo, options, counter) {
+  if (options.memprof) {
+    let opts = Object.assign(makeAuthorizationHeaders(options),
+                             { method: 'GET' });
+
+    instanceInfo.arangods.forEach((arangod) => {
+      let fn = fs.join(arangod.rootDir, `${arangod.role}_${arangod.pid}_${counter}_.heap`);
+      let heapdumpReply = download(arangod.url + '/_admin/status?memory=true', opts);
+      if (heapdumpReply.code === 200) {
+        fs.write(fn, heapdumpReply.body);
+        print(CYAN + Date() + ` Saved ${fn}` + RESET);
+      } else {
+        print(RED + Date() + ` Acquiring Heapdump for ${fn} failed!` + RESET);
+        print(heapdumpReply);
+      }
+
+      let fnMetrics = fs.join(arangod.rootDir, `${arangod.role}_${arangod.pid}_${counter}_.metrics`);
+      let metricsReply = download(arangod.url + '/_admin/metrics', opts);
+      if (metricsReply.code === 200) {
+        fs.write(fnMetrics, metricsReply.body);
+        print(CYAN + Date() + ` Saved ${fnMetrics}` + RESET);
+      } else if (metricsReply.code === 503) {
+        print(RED + Date() + ` Acquiring metrics for ${fnMetrics} not possible!` + RESET);
+      } else {
+        print(RED + Date() + ` Acquiring metrics for ${fnMetrics} failed!` + RESET);
+        print(metricsReply);
+      }
+    });
+  }
 }
 
 // //////////////////////////////////////////////////////////////////////////////
@@ -692,7 +823,7 @@ function executeAndWait (cmd, args, options, valgrindTest, rootDir, coreCheck = 
     instanceInfo.pid = res.pid;
     instanceInfo.exitStatus = res;
     if (crashUtils.runProcdump(options, instanceInfo, rootDir, res.pid)) {
-      Object.assign(instanceInfo.exitStatus, 
+      Object.assign(instanceInfo.exitStatus,
                     statusExternal(res.pid, true, timeout * 1000));
       if (instanceInfo.exitStatus.status === 'TIMEOUT') {
         print('Timeout while running ' + cmd + ' - will kill it now! ' + JSON.stringify(args));
@@ -765,7 +896,8 @@ function executeAndWait (cmd, args, options, valgrindTest, rootDir, coreCheck = 
         timeout: false,
         status: false,
         message: 'exit code was ' + instanceInfo.exitStatus.exit,
-        duration: deltaTime
+        duration: deltaTime,
+        exitCode: instanceInfo.exitStatus.exit,
       };
     }
   } else if (instanceInfo.exitStatus.status === 'ABORTED') {
@@ -881,6 +1013,10 @@ function runArangoImport (options, instanceInfo, what, coreCheck = false) {
     'ignore-missing': what.ignoreMissing || false
   };
 
+  if (what.headers !== undefined) {
+    args['headers-file'] = fs.join(TOP_DIR, what.headers);
+  }
+
   if (what.skipLines !== undefined) {
     args['skip-lines'] = what.skipLines;
   }
@@ -934,7 +1070,7 @@ function runArangoDumpRestoreCfg (config, options, rootDir, coreCheck) {
 function runArangoDumpRestore (options, instanceInfo, which, database, rootDir, dumpDir = 'dump', includeSystem = true, coreCheck = false) {
   const cfg = createBaseConfigBuilder(which, options, instanceInfo, database);
   cfg.setIncludeSystem(includeSystem);
-  if (rootDir) { cfg.setRootDir(rootDir); } 
+  if (rootDir) { cfg.setRootDir(rootDir); }
 
   if (which === 'dump') {
     cfg.setOutputDirectory(dumpDir);
@@ -964,17 +1100,22 @@ function runArangoBackup (options, instanceInfo, which, cmds, rootDir, coreCheck
   };
   if (options.username) {
     args['server.username'] = options.username;
+    args['server.password'] = "";
   }
   if (options.password) {
     args['server.password'] = options.password;
   }
-  
+
   args = Object.assign(args, cmds);
 
+  args['log.level'] = 'info';
   if (!args.hasOwnProperty('verbose')) {
     args['log.level'] = 'warning';
   }
-  
+  if (options.extremeVerbosity) {
+    args['log.level'] = 'trace';
+  }
+
   args['flatCommands'] = [which];
 
   return executeAndWait(ARANGOBACKUP_BIN, toArgv(args), options, 'arangobackup', instanceInfo.rootDir, coreCheck);
@@ -1065,9 +1206,9 @@ function checkUptime (instanceInfo, options) {
     if (reply.hasOwnProperty('error') || reply.code !== 200) {
       throw new Error("unable to get statistics reply: " + JSON.stringify(reply));
     }
-  
+
     let statisticsReply = JSON.parse(reply.body);
-    
+
     ret [ arangod.name ] = statisticsReply.server.uptime;
   });
   return ret;
@@ -1137,7 +1278,7 @@ function checkInstanceAlive (instanceInfo, options) {
       return false;
     }
   }
-  
+
   let rc = instanceInfo.arangods.reduce((previous, arangod) => {
     let ret = checkArangoAlive(arangod, options);
     if (!ret) {
@@ -1260,12 +1401,14 @@ function executeArangod (cmd, args, options) {
 function getSockStat(arangod, options, preamble) {
   if (options.getSockStat && (platform === 'linux')) {
     let sockStat = preamble + arangod.pid + "\n";
-    try {
-      sockStat += fs.read("/proc/" + arangod.pid + "/net/sockstat");
-      return sockStat;
-    }
-    catch (e) {/* oops, process already gone? don't care. */ }
+    sockStat += getSockStatFile(arangod.pid);
+    return sockStat;
   }
+}
+function getSockStatFile(pid) {
+  try {
+    return fs.read("/proc/" + pid + "/net/sockstat");
+  } catch (e) {/* oops, process already gone? don't care. */ }
   return "";
 }
 
@@ -1382,7 +1525,7 @@ function shutdownInstance (instanceInfo, options, forceTerminate) {
       print(x);
     }
   }
-  
+
   // Shut down all non-agency servers:
   const n = instanceInfo.arangods.length;
 
@@ -1401,7 +1544,7 @@ function shutdownInstance (instanceInfo, options, forceTerminate) {
 
   let nonAgenciesCount = instanceInfo.arangods
       .filter(arangod => {
-        if (arangod.hasOwnProperty('exitStatus') && 
+        if (arangod.hasOwnProperty('exitStatus') &&
             (arangod.exitStatus.status !== 'RUNNING')) {
           return false;
         }
@@ -1494,11 +1637,11 @@ function shutdownInstance (instanceInfo, options, forceTerminate) {
     });
     if (toShutdown.length > 0) {
       let roles = {};
-      toShutdown.forEach(arangod => { 
+      toShutdown.forEach(arangod => {
         if (!roles.hasOwnProperty(arangod.role)) {
           roles[arangod.role] = 0;
-        } 
-        ++roles[arangod.role]; 
+        }
+        ++roles[arangod.role];
       });
       let roleNames = [];
       for (let r in roles) {
@@ -1739,6 +1882,9 @@ function startInstanceCluster (instanceInfo, protocol, options,
       coordinatorArgs['cluster.my-address'] = endpoint;
       coordinatorArgs['cluster.my-role'] = 'COORDINATOR';
       coordinatorArgs['cluster.agency-endpoint'] = agencyEndpoint;
+      if (!addArgs.hasOwnProperty('cluster.default-replication-factor')) {
+        coordinatorArgs['cluster.default-replication-factor'] = (platform.substr(0, 3) === 'win') ? '1':'2';
+      }
 
       startInstanceSingleServer(instanceInfo, protocol, options, ...makeArgs('coordinator' + i, 'coordinator', coordinatorArgs), 'coordinator');
     }
@@ -1821,6 +1967,20 @@ function launchFinalize(options, instanceInfo, startTime) {
             throw new Error('startup failed! bailing out!');
           }
         }
+        if (count === 300) {
+          throw new Error('startup timed out! bailing out!');
+        }
+      }
+    });
+    instanceInfo.endpoints = [instanceInfo.endpoint];
+    instanceInfo.urls = [instanceInfo.url];
+  } else {
+    instanceInfo.urls = [];
+    instanceInfo.endpoints = [];
+    instanceInfo.arangods.forEach(arangod => {
+      if (arangod.role === 'coordinator') {
+        instanceInfo.urls.push(arangod.url);
+        instanceInfo.endpoints.push(arangod.endpoint);
       }
     });
   }
@@ -1920,6 +2080,10 @@ function startArango (protocol, options, addArgs, rootDir, role) {
     port = endpoint.split(':').pop();
   }
 
+  if (options.memprof) {
+    process.env['MALLOC_CONF'] = 'prof:true';
+  }
+
   let instanceInfo = {
     role,
     port,
@@ -2008,7 +2172,9 @@ function startInstanceAgency (instanceInfo, protocol, options, addArgs, rootDir)
     instanceArgs['agency.my-address'] = protocol + '://127.0.0.1:' + port;
     instanceArgs['agency.supervision-grace-period'] = '10.0';
     instanceArgs['agency.supervision-frequency'] = '1.0';
-
+    if (options.encryptionAtRest) {
+      instanceArgs['rocksdb.encryption-keyfile'] = instanceInfo.restKeyFile;
+    }
     if (i === N - 1) {
       let l = [];
       instanceInfo.arangods.forEach(arangod => {
@@ -2043,6 +2209,9 @@ function startInstanceAgency (instanceInfo, protocol, options, addArgs, rootDir)
 
 function startInstanceSingleServer (instanceInfo, protocol, options,
   addArgs, rootDir, role) {
+  if (options.encryptionAtRest) {
+    addArgs['rocksdb.encryption-keyfile'] = instanceInfo.restKeyFile;
+  }
   instanceInfo.arangods.push(startArango(protocol, options, addArgs, rootDir, role));
 
   instanceInfo.endpoint = instanceInfo.arangods[instanceInfo.arangods.length - 1].endpoint;
@@ -2068,10 +2237,19 @@ function startInstance (protocol, options, addArgs, testname, tmpDir) {
     protocol: protocol
   };
 
+  if (options.encryptionAtRest && !isEnterpriseClient) {
+    options.encryptionAtRest = false;
+  }
+  if (options.encryptionAtRest) {
+    instanceInfo.restKeyFile = fs.join(rootDir, 'openSesame.txt');
+    fs.makeDirectoryRecursive(rootDir);
+    fs.write(instanceInfo.restKeyFile, "Open Sesame!Open Sesame!Open Ses");
+  }
+
   const startTime = time();
   try {
     if (options.hasOwnProperty('server')) {
-      let rc = { 
+      let rc = {
                  endpoint: options.server,
                  rootDir: options.serverRoot,
                  url: options.server.replace('tcp', 'http'),
@@ -2107,7 +2285,7 @@ function reStartInstance(options, instanceInfo, moreArgs) {
       oneInstanceInfo.pid = executeArangod(ARANGOD_BIN, toArgv(oneInstanceInfo.args), options).pid;
     } catch (x) {
       print(Date() + ' failed to run arangod - ' + JSON.stringify(x));
-      
+
       throw x;
     }
     if (crashUtils.isEnabledWindowsMonitor(options, oneInstanceInfo, oneInstanceInfo.pid, ARANGOD_BIN)) {
@@ -2120,7 +2298,7 @@ function reStartInstance(options, instanceInfo, moreArgs) {
       }
     }
   };
-  
+
   const startTime = time();
 
   instanceInfo.arangods.forEach(function (oneInstance, i) {
@@ -2131,7 +2309,7 @@ function reStartInstance(options, instanceInfo, moreArgs) {
     delete(oneInstance.pid);
     oneInstance.upAndRunning = false;
   });
-  
+
   if (options.cluster) {
     let agencyInstance = {arangods: []};
     instanceInfo.arangods.forEach(function (oneInstance, i) {
@@ -2235,6 +2413,7 @@ exports.shutdownInstance = shutdownInstance;
 exports.getProcessStats = getProcessStats;
 exports.getDeltaProcessStats = getDeltaProcessStats;
 exports.summarizeStats = summarizeStats;
+exports.getMemProfSnapshot = getMemProfSnapshot;
 exports.startArango = startArango;
 exports.startInstance = startInstance;
 exports.reStartInstance = reStartInstance;
@@ -2249,7 +2428,7 @@ exports.cleanupLastDirectory = cleanupLastDirectory;
 exports.getCleanupDBDirectories = getCleanupDBDirectories;
 
 exports.makeAuthorizationHeaders = makeAuthorizationHeaders;
-
+exports.dumpAgency = dumpAgency;
 Object.defineProperty(exports, 'ARANGOEXPORT_BIN', {get: () => ARANGOEXPORT_BIN});
 Object.defineProperty(exports, 'ARANGOD_BIN', {get: () => ARANGOD_BIN});
 Object.defineProperty(exports, 'ARANGOSH_BIN', {get: () => ARANGOSH_BIN});

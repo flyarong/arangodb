@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -79,10 +79,6 @@ size_t RequestStatistics::processAll() {
 }
 
 RequestStatistics::Item RequestStatistics::acquire() {
-  if (!StatisticsFeature::enabled()) {
-    return Item{};
-  }
-
   RequestStatistics* statistics = nullptr;
 
   if (_freeList.pop(statistics)) {
@@ -189,11 +185,6 @@ void RequestStatistics::release() {
 }
 
 void RequestStatistics::getSnapshot(Snapshot& snapshot, stats::RequestStatisticsSource source) {
-  if (!StatisticsFeature::enabled()) {
-    // all the below objects may be deleted if we don't have statistics enabled
-    return;
-  }
-
   statistics::RequestFigures& figures = source == stats::RequestStatisticsSource::USER
     ? statistics::UserRequestFigures
     : statistics::SuperuserRequestFigures;

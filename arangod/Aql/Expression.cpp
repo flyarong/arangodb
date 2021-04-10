@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -271,8 +271,7 @@ bool Expression::findInArray(AqlValue const& left, AqlValue const& right,
   
   // use linear search
 
-  if (!right.isDocvec() && !right.isRange() &&
-      !left.isDocvec() && !left.isRange()) {
+  if (!right.isRange() && !left.isRange()) {
     // optimization for the case in which rhs is a Velocypack array, and we 
     // can simply use a VelocyPack iterator to walk through it. this will
     // be a lot more efficient than using right.at(i) in case the array is
@@ -801,7 +800,8 @@ AqlValue Expression::executeSimpleExpressionFCall(AstNode const* node, bool& mus
   // only some functions have C++ handlers
   // check that the called function actually has one
   auto func = static_cast<Function*>(node->getData());
-  if (func->implementation != nullptr) {
+  TRI_ASSERT(func != nullptr);
+  if (func->hasCxxImplementation()) {
     return executeSimpleExpressionFCallCxx(node, mustDestroy);
   }
   return executeSimpleExpressionFCallJS(node, mustDestroy);
@@ -813,7 +813,8 @@ AqlValue Expression::executeSimpleExpressionFCallCxx(AstNode const* node,
   TRI_ASSERT(node != nullptr);
   mustDestroy = false;
   auto func = static_cast<Function*>(node->getData());
-  TRI_ASSERT(func->implementation != nullptr);
+  TRI_ASSERT(func != nullptr);
+  TRI_ASSERT(func->hasCxxImplementation());
 
   auto member = node->getMemberUnchecked(0);
   TRI_ASSERT(member->type == NODE_TYPE_ARRAY);
@@ -974,6 +975,8 @@ AqlValue Expression::executeSimpleExpressionFCallJS(AstNode const* node,
     } else {
       // a call to a built-in V8 function
       auto func = static_cast<Function*>(node->getData());
+      TRI_ASSERT(func != nullptr);
+      TRI_ASSERT(func->hasV8Implementation());
       jsName = "AQL_" + func->name;
 
       for (size_t i = 0; i < n; ++i) {
@@ -1289,7 +1292,7 @@ AqlValue Expression::executeSimpleExpressionArrayComparison(AstNode const* node,
     AqlValue leftItemValue = left.at(i, localMustDestroy, false);
     AqlValueGuard guard(leftItemValue, localMustDestroy);
 
-    bool result;
+    bool result = false;
 
     // IN and NOT IN
     if (node->type == NODE_TYPE_OPERATOR_BINARY_ARRAY_IN ||
@@ -1304,7 +1307,6 @@ AqlValue Expression::executeSimpleExpressionArrayComparison(AstNode const* node,
       // other operators
       int compareResult = AqlValue::Compare(&vopts, leftItemValue, right, compareUtf8);
 
-      result = false;
       switch (node->type) {
         case NODE_TYPE_OPERATOR_BINARY_ARRAY_EQ:
           result = (compareResult == 0);
@@ -1687,9 +1689,9 @@ AstNode* Expression::nodeForModification() const {
   return _node; 
 }
 
-bool Expression::canRunOnDBServer() {
+bool Expression::canRunOnDBServer(bool isOneShard) {
   TRI_ASSERT(_type != UNPROCESSED);
-  return (_type == JSON || _node->canRunOnDBServer());
+  return (_type == JSON || _node->canRunOnDBServer(isOneShard));
 }
 
 bool Expression::isDeterministic() {

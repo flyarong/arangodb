@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -83,7 +83,6 @@
 #include "RestHandler/RestQueryCacheHandler.h"
 #include "RestHandler/RestQueryHandler.h"
 #include "RestHandler/RestRedirectHandler.h"
-#include "RestHandler/RestRepairHandler.h"
 #include "RestHandler/RestShutdownHandler.h"
 #include "RestHandler/RestSimpleHandler.h"
 #include "RestHandler/RestSimpleQueryHandler.h"
@@ -120,10 +119,6 @@ using namespace arangodb::options;
 namespace arangodb {
 
 static uint64_t const _maxIoThreads = 64;
-
-rest::RestHandlerFactory* GeneralServerFeature::HANDLER_FACTORY = nullptr;
-rest::AsyncJobManager* GeneralServerFeature::JOB_MANAGER = nullptr;
-GeneralServerFeature* GeneralServerFeature::GENERAL_SERVER = nullptr;
 
 GeneralServerFeature::GeneralServerFeature(application_features::ApplicationServer& server)
     : ApplicationFeature(server, "GeneralServer"),
@@ -241,17 +236,12 @@ void GeneralServerFeature::validateOptions(std::shared_ptr<ProgramOptions>) {
 
 void GeneralServerFeature::prepare() {
   ServerState::instance()->setServerMode(ServerState::Mode::MAINTENANCE);
-  GENERAL_SERVER = this;
 }
 
 void GeneralServerFeature::start() {
   _jobManager.reset(new AsyncJobManager);
 
-  JOB_MANAGER = _jobManager.get();
-
   _handlerFactory.reset(new RestHandlerFactory());
-
-  HANDLER_FACTORY = _handlerFactory.get();
 
   defineHandlers();
   buildServers();
@@ -280,10 +270,43 @@ void GeneralServerFeature::unprepare() {
   }
   _servers.clear();
   _jobManager.reset();
+}
 
-  GENERAL_SERVER = nullptr;
-  JOB_MANAGER = nullptr;
-  HANDLER_FACTORY = nullptr;
+double GeneralServerFeature::keepAliveTimeout() const {
+  return _keepAliveTimeout;
+}
+
+bool GeneralServerFeature::proxyCheck() const { return _proxyCheck; }
+
+std::vector<std::string> GeneralServerFeature::trustedProxies() const {
+  return _trustedProxies;
+}
+
+bool GeneralServerFeature::allowMethodOverride() const {
+  return _allowMethodOverride;
+}
+
+std::vector<std::string> const& GeneralServerFeature::accessControlAllowOrigins() const {
+  return _accessControlAllowOrigins;
+}
+
+Result GeneralServerFeature::reloadTLS() {  // reload TLS data from disk
+  Result res;
+  for (auto& up : _servers) {
+    Result res2 = up->reloadTLS();
+    if (res2.fail()) {
+      res = res2;  // yes, we only report the last error if there is one
+    }
+  }
+  return res;
+}
+
+rest::RestHandlerFactory& GeneralServerFeature::handlerFactory() {
+  return *_handlerFactory;
+}
+
+rest::AsyncJobManager& GeneralServerFeature::jobManager() {
+  return *_jobManager;
 }
 
 void GeneralServerFeature::buildServers() {
@@ -302,7 +325,7 @@ void GeneralServerFeature::buildServers() {
       FATAL_ERROR_EXIT();
     }
     SslServerFeature& ssl = server().getFeature<SslServerFeature>();
-    ssl.SSL->verifySslOptions();
+    ssl.verifySslOptions();
   }
 
   auto server = std::make_unique<GeneralServer>(*this, _numIoThreads);
@@ -471,7 +494,8 @@ void GeneralServerFeature::defineHandlers() {
   _handlerFactory->addHandler("/_admin/auth/reload",
                               RestHandlerCreator<RestAuthReloadHandler>::createNoData);
 
-  if (V8DealerFeature::DEALER && V8DealerFeature::DEALER->allowAdminExecute()) {
+  if (server().hasFeature<V8DealerFeature>() &&
+      server().getFeature<V8DealerFeature>().allowAdminExecute()) {
     // the /_admin/execute API depends on V8. only enable it if JavaScript is enabled
     _handlerFactory->addHandler("/_admin/execute",
                                 RestHandlerCreator<RestAdminExecuteHandler>::createNoData);
@@ -555,16 +579,11 @@ void GeneralServerFeature::defineHandlers() {
   _handlerFactory->addHandler("/_admin/statistics",
                               RestHandlerCreator<arangodb::RestAdminStatisticsHandler>::createNoData);
 
-  _handlerFactory->addHandler("/_admin/metrics",
+  _handlerFactory->addPrefixHandler("/_admin/metrics",
                               RestHandlerCreator<arangodb::RestMetricsHandler>::createNoData);
 
   _handlerFactory->addHandler("/_admin/statistics-description",
                               RestHandlerCreator<arangodb::RestAdminStatisticsHandler>::createNoData);
-
-  if (cluster.isEnabled()) {
-    _handlerFactory->addPrefixHandler("/_admin/repair",
-                                      RestHandlerCreator<arangodb::RestRepairHandler>::createNoData);
-  }
 
 #ifdef USE_ENTERPRISE
   if (backup.isAPIEnabled()) {

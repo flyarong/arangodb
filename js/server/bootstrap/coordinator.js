@@ -27,21 +27,11 @@
 // @author Copyright 2014-2020, ArangoDB GmbH, Cologne, Germany
 ///////////////////////////////////////////////////////////////////////////////
 
-// //////////////////////////////////////////////////////////////////////////////
-// / @brief initialize a new database
-// //////////////////////////////////////////////////////////////////////////////
-
+/// initializes a coordinator. will be called once per V8 context, on all coordinators
 (function () {
   const internal = require('internal');
-  const errors = require('@arangodb').errors;
 
   // autoload all modules
-  // this functionality is deprecated and will be removed in 3.9
-  if (global.USE_OLD_SYSTEM_COLLECTIONS) {
-    // check and load all modules in all databases from _modules
-    // this can be expensive, so it is guarded by a flag.
-    internal.loadStartup('server/bootstrap/autoload.js').startup();
-  }
 
   // the function name reloadRouting is misleading here, as it actually
   // only initializes/clears the local routing map, but doesn't rebuild

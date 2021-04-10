@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -89,8 +89,6 @@ std::unique_ptr<TRI_vocbase_t> calculationVocbase;
   // i am here for debugging only.
 TRI_vocbase_t* DatabaseFeature::CURRENT_VOCBASE = nullptr;
 #endif
-
-DatabaseFeature* DatabaseFeature::DATABASE = nullptr;
 
 /// @brief database manager thread main loop
 /// the purpose of this thread is to physically remove directories of databases
@@ -281,7 +279,7 @@ DatabaseFeature::DatabaseFeature(application_features::ApplicationServer& server
       _isInitiallyEmpty(false),
       _checkVersion(false),
       _upgrade(false),
-      _useOldSystemCollections(true) {
+      _started(false) {
   setOptional(false);
   startsAfter<BasicFeaturePhaseServer>();
 
@@ -290,16 +288,12 @@ DatabaseFeature::DatabaseFeature(application_features::ApplicationServer& server
   startsAfter<EngineSelectorFeature>();
   startsAfter<InitDatabaseFeature>();
   startsAfter<StorageEngineFeature>();
-
-  DATABASE = nullptr;
 }
 
 DatabaseFeature::~DatabaseFeature() {
   // clean up
   auto p = _databasesLists.load();
   delete p;
-
-  DATABASE = nullptr;
 }
 
 void DatabaseFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
@@ -323,14 +317,10 @@ void DatabaseFeature::collectOptions(std::shared_ptr<ProgramOptions> options) {
                      new BooleanParameter(&_ignoreDatafileErrors),
                      arangodb::options::makeDefaultFlags(arangodb::options::Flags::Hidden));
 
-  options->addOption(
+  // the following option was obsoleted in 3.9
+  options->addObsoleteOption(
       "--database.old-system-collections",
-      "create and use deprecated system collection (_modules, _fishbowl)",
-      new BooleanParameter(&_useOldSystemCollections),
-      arangodb::options::makeDefaultFlags(arangodb::options::Flags::Hidden))
-      .setIntroducedIn(30609)
-      .setIntroducedIn(30705)
-      .setDeprecatedIn(30800);
+      "create and use deprecated system collection (_modules, _fishbowl)", false);
   
   // the following option was obsoleted in 3.8
   options->addObsoleteOption(
@@ -379,9 +369,6 @@ void DatabaseFeature::initCalculationVocbase(application_features::ApplicationSe
 }
 
 void DatabaseFeature::start() {
-  // set singleton
-  DATABASE = this;
-
   verifyAppPaths();
 
   // scan all databases
@@ -391,7 +378,7 @@ void DatabaseFeature::start() {
 
   TRI_ASSERT(builder.slice().isArray());
 
-  int res = iterateDatabases(builder.slice());
+  auto res = iterateDatabases(builder.slice());
 
   if (res != TRI_ERROR_NO_ERROR) {
     LOG_TOPIC("0c49d", FATAL, arangodb::Logger::FIXME)
@@ -418,6 +405,8 @@ void DatabaseFeature::start() {
   if (!arangodb::ServerState::instance()->isRunningInCluster()) {
     enableDeadlockDetection();
   }
+
+  _started.store(true);
 }
 
 // signal to all databases that active cursors can be wiped
@@ -549,8 +538,6 @@ void DatabaseFeature::unprepare() {
   } catch (...) {
   }
   calculationVocbase.reset();
-  // clear singleton
-  DATABASE = nullptr;
 }
 
 void DatabaseFeature::prepare() {
@@ -615,6 +602,10 @@ Result DatabaseFeature::registerPostRecoveryCallback(std::function<Result()>&& c
 
   return Result();
 }
+
+bool DatabaseFeature::started() const noexcept {
+  return _started.load(std::memory_order_relaxed);
+}
   
 void DatabaseFeature::enumerate(std::function<void(TRI_vocbase_t*)> const& callback) {
   auto unuser(_databasesProtector.use());
@@ -661,7 +652,7 @@ Result DatabaseFeature::createDatabase(CreateDatabaseInfo&& info, TRI_vocbase_t*
     }
 
     // createDatabase must return a valid database or throw
-    int status = TRI_ERROR_NO_ERROR;
+    auto status = TRI_ERROR_NO_ERROR;
 
     vocbase = engine.createDatabase(std::move(info), status);
     TRI_ASSERT(status == TRI_ERROR_NO_ERROR);
@@ -690,7 +681,7 @@ Result DatabaseFeature::createDatabase(CreateDatabaseInfo&& info, TRI_vocbase_t*
       auto appPath = dealer.appPath();
 
       // create app directory for database if it does not exist
-      int res = createApplicationDirectory(name, appPath, true);
+      auto res = createApplicationDirectory(name, appPath, true);
 
       if (res != TRI_ERROR_NO_ERROR) {
         THROW_ARANGO_EXCEPTION(res);
@@ -738,17 +729,15 @@ Result DatabaseFeature::createDatabase(CreateDatabaseInfo&& info, TRI_vocbase_t*
 
   result = vocbase.release();
 
-  if (DatabaseFeature::DATABASE != nullptr &&
-      DatabaseFeature::DATABASE->versionTracker() != nullptr) {
-    DatabaseFeature::DATABASE->versionTracker()->track("create database");
+  if (versionTracker() != nullptr) {
+    versionTracker()->track("create database");
   }
 
   return res;
 }
 
 /// @brief drop database
-int DatabaseFeature::dropDatabase(std::string const& name,
-                                  bool removeAppsDirectory) {
+ErrorCode DatabaseFeature::dropDatabase(std::string const& name, bool removeAppsDirectory) {
   if (name == StaticStrings::SystemDatabase) {
     // prevent deletion of system database
     return TRI_ERROR_FORBIDDEN;
@@ -756,7 +745,7 @@ int DatabaseFeature::dropDatabase(std::string const& name,
 
   StorageEngine& engine = server().getFeature<EngineSelectorFeature>().engine();
   TRI_voc_tick_t id = 0;
-  int res = TRI_ERROR_NO_ERROR;
+  auto res = TRI_ERROR_NO_ERROR;
   {
     MUTEX_LOCKER(mutexLocker, _databasesMutex);
 
@@ -847,17 +836,15 @@ int DatabaseFeature::dropDatabase(std::string const& name,
   // must not use the database after here, as it may now be
   // deleted by the DatabaseManagerThread!
 
-  if (DatabaseFeature::DATABASE != nullptr &&
-      DatabaseFeature::DATABASE->versionTracker() != nullptr) {
-    DatabaseFeature::DATABASE->versionTracker()->track("drop database");
+  if (versionTracker() != nullptr) {
+    versionTracker()->track("drop database");
   }
 
   return res;
 }
 
 /// @brief drops an existing database
-int DatabaseFeature::dropDatabase(TRI_voc_tick_t id,
-                                  bool removeAppsDirectory) {
+ErrorCode DatabaseFeature::dropDatabase(TRI_voc_tick_t id, bool removeAppsDirectory) {
   std::string name;
 
   // find database by name
@@ -1156,9 +1143,9 @@ void DatabaseFeature::closeOpenDatabases() {
 }
 
 /// @brief create base app directory
-int DatabaseFeature::createBaseApplicationDirectory(std::string const& appPath,
-                                                    std::string const& type) {
-  int res = TRI_ERROR_NO_ERROR;
+ErrorCode DatabaseFeature::createBaseApplicationDirectory(std::string const& appPath,
+                                                          std::string const& type) {
+  auto res = TRI_ERROR_NO_ERROR;
   std::string path = arangodb::basics::FileUtils::buildFilename(appPath, type);
 
   if (!TRI_IsDirectory(path.c_str())) {
@@ -1185,9 +1172,9 @@ int DatabaseFeature::createBaseApplicationDirectory(std::string const& appPath,
 }
 
 /// @brief create app subdirectory for a database
-int DatabaseFeature::createApplicationDirectory(std::string const& name,
-                                                std::string const& basePath,
-                                                bool removeExisting) {
+ErrorCode DatabaseFeature::createApplicationDirectory(std::string const& name,
+                                                      std::string const& basePath,
+                                                      bool removeExisting) {
   if (basePath.empty()) {
     return TRI_ERROR_NO_ERROR;
   }
@@ -1215,7 +1202,7 @@ int DatabaseFeature::createApplicationDirectory(std::string const& name,
   // directory does not yet exist - this should be the standard case
   long systemError;
   std::string errorMessage;
-  int res = TRI_CreateRecursiveDirectory(path.c_str(), systemError, errorMessage);
+  auto res = TRI_CreateRecursiveDirectory(path.c_str(), systemError, errorMessage);
 
   if (res == TRI_ERROR_NO_ERROR) {
     LOG_TOPIC("6745a", TRACE, arangodb::Logger::FIXME)
@@ -1236,13 +1223,13 @@ int DatabaseFeature::createApplicationDirectory(std::string const& name,
 }
 
 /// @brief iterate over all databases in the databases directory and open them
-int DatabaseFeature::iterateDatabases(VPackSlice const& databases) {
+ErrorCode DatabaseFeature::iterateDatabases(VPackSlice const& databases) {
   V8DealerFeature& dealer = server().getFeature<V8DealerFeature>();
   std::string const appPath = dealer.appPath();
 
   StorageEngine& engine = server().getFeature<EngineSelectorFeature>().engine();
 
-  int res = TRI_ERROR_NO_ERROR;
+  auto res = TRI_ERROR_NO_ERROR;
 
   // open databases in defined order
   MUTEX_LOCKER(mutexLocker, _databasesMutex);
@@ -1369,7 +1356,7 @@ void DatabaseFeature::verifyAppPaths() {
   if (!appPath.empty() && !TRI_IsDirectory(appPath.c_str())) {
     long systemError;
     std::string errorMessage;
-    int res = TRI_CreateRecursiveDirectory(appPath.c_str(), systemError, errorMessage);
+    auto res = TRI_CreateRecursiveDirectory(appPath.c_str(), systemError, errorMessage);
 
     if (res == TRI_ERROR_NO_ERROR) {
       LOG_TOPIC("1bf74", INFO, arangodb::Logger::FIXME)
@@ -1383,7 +1370,7 @@ void DatabaseFeature::verifyAppPaths() {
   }
 
   // create subdirectory js/apps/_db if not yet present
-  int res = createBaseApplicationDirectory(appPath, "_db");
+  auto res = createBaseApplicationDirectory(appPath, "_db");
 
   if (res != TRI_ERROR_NO_ERROR) {
     LOG_TOPIC("610c7", ERR, arangodb::Logger::FIXME)

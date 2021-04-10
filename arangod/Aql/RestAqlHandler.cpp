@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2020 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2021 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
@@ -204,7 +204,7 @@ void RestAqlHandler::setupClusterQuery() {
   //   "WRITE"} ], initialize: false, nodes: <one of snippets[*].value>,
   //   variables: <variables slice>
   // }
-  
+
   QueryOptions options(optionsSlice);
   if (options.ttl <= 0) { // patch TTL value
     options.ttl = _queryRegistry->defaultTTL();
@@ -301,16 +301,6 @@ void RestAqlHandler::setupClusterQuery() {
 
   _queryRegistry->insertQuery(std::move(q), ttl, std::move(rGuard));
   generateResult(rest::ResponseCode::OK, std::move(buffer));
-}
-
-// DELETE method for /_api/aql/kill/<queryId>, (internal)
-// simon: only used for <= 3.6
-bool RestAqlHandler::killQuery(std::string const& idString) {
-  auto qid = arangodb::basics::StringUtils::uint64(idString);
-  if (qid != 0) {
-    return _queryRegistry->destroyEngine(qid, TRI_ERROR_QUERY_KILLED);
-  }
-  return false;
 }
 
 // PUT method for /_api/aql/<operation>/<queryId>, (internal)
@@ -412,13 +402,6 @@ RestStatus RestAqlHandler::execute() {
       }
       if (suffixes[0] == "finish") {
         return handleFinishQuery(suffixes[1]);
-      } else if (suffixes[0] == "kill" && killQuery(suffixes[1])) {
-        VPackBuilder answerBody;
-        {
-          VPackObjectBuilder guard(&answerBody);
-          answerBody.add(StaticStrings::Error, VPackValue(false));
-        }
-        generateResult(rest::ResponseCode::OK, answerBody.slice());
       } else {
         generateError(rest::ResponseCode::NOT_FOUND, TRI_ERROR_QUERY_NOT_FOUND,
                       "query with id " + suffixes[1] + " not found");
@@ -669,15 +652,13 @@ RestStatus RestAqlHandler::handleUseQuery(std::string const& operation,
     if (shardId.empty()) {
       std::tie(state, skipped, items) =
           _engine->execute(executeCall.callStack());
-      if (state == ExecutionState::WAITING) {
-        return RestStatus::WAITING;
-      }
     } else {
       std::tie(state, skipped, items) =
           _engine->executeForClient(executeCall.callStack(), shardId);
-      if (state == ExecutionState::WAITING) {
-        return RestStatus::WAITING;
-      }
+    }
+      
+    if (state == ExecutionState::WAITING) {
+      return RestStatus::WAITING;
     }
 
     auto result = AqlExecuteResult{state, skipped, std::move(items)};
@@ -794,8 +775,10 @@ RestStatus RestAqlHandler::handleFinishQuery(std::string const& idString) {
   if (!success) {
     return RestStatus::DONE;
   }
-  
-  int errorCode = VelocyPackHelper::getNumericValue<int>(querySlice, StaticStrings::Code, TRI_ERROR_INTERNAL);
+
+  auto errorCode =
+      VelocyPackHelper::getNumericValue<ErrorCode>(querySlice, StaticStrings::Code,
+                                                   TRI_ERROR_INTERNAL);
   std::unique_ptr<ClusterQuery> query = _queryRegistry->destroyQuery(_vocbase.name(), qid, errorCode);
   if (!query) {
     // this may be a race between query garbage collection and the client

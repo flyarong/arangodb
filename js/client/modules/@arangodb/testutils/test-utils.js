@@ -100,6 +100,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
     serverOptions = {};
   }
 
+  let memProfCounter = 0;
   let env = {};
   let customInstanceInfos = {};
   let healthCheck = function () {return true;};
@@ -208,14 +209,17 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
 
           if (!results.hasOwnProperty('SKIPPED')) {
             print('oops! Skipping remaining tests, server is unavailable for testing.');
-
+            let originalMessage;
+            if (results.hasOwnProperty(te) && results[te].hasOwnProperty('message')) {
+              originalMessage = results[te].message;
+            }
             results['SKIPPED'] = {
               status: false,
               message: ""
             };
             results[te] = {
               status: false,
-              message: 'server unavailable for testing.'
+              message: 'server unavailable for testing. ' + originalMessage
             };
           } else {
             if (results['SKIPPED'].message !== '') {
@@ -229,6 +233,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
           break;
         }
 
+        pu.getMemProfSnapshot(instanceInfo, options, memProfCounter++);
         print('\n' + (new Date()).toISOString() + GREEN + " [============] " + runFn.info + ': Trying', te, '...', RESET);
         let reply = runFn(options, instanceInfo, te, env);
 
@@ -260,7 +265,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
         }
         if (pu.arangod.check.instanceAlive(instanceInfo, options) &&
             healthCheck(options, serverOptions, instanceInfo, customInstanceInfos, startStopHandlers)) {
-          continueTesting = true; 
+          continueTesting = true;
 
           // Check whether some collections & views were left behind, and if mark test as failed.
           let collectionsAfter = [];
@@ -289,7 +294,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
 
           let deltaViews = diffArray(viewsBefore, viewsAfter).filter(function(name) {
             return ! ((name[0] === '_') || (name === "compact") || (name === "election")
-                     || (name === "log")); 
+                     || (name === "log"));
           });
           if ((delta.length !== 0) || (deltaViews.length !== 0)){
             results[te] = {
@@ -350,7 +355,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
             message: 'server is dead: ' + msg + instanceInfo.message
           };
         }
-        
+
         if (startStopHandlers !== undefined && startStopHandlers.hasOwnProperty('alive')) {
           customInstanceInfos['alive'] = startStopHandlers.alive(options,
                                                                  serverOptions,
@@ -409,10 +414,16 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
     results.status = true;
     print(RED + 'No testcase matched the filter.' + RESET);
   }
+
   if (options.sleepBeforeShutdown !== 0) {
     print("Sleeping for " + options.sleepBeforeShutdown + " seconds");
     sleep(options.sleepBeforeShutdown);
   }
+
+  if (continueTesting) {
+    pu.getMemProfSnapshot(instanceInfo, options, memProfCounter++);
+  }
+
   let shutDownStart = time();
   results['testDuration'] = shutDownStart - testrunStart;
   print(Date() + ' Shutting down...');
@@ -442,7 +453,7 @@ function performTests (options, testList, testname, runFn, serverOptions, startS
   results.shutdown = results.shutdown && pu.shutdownInstance(instanceInfo, clonedOpts, forceTerminate);
 
   loadClusterTestStabilityInfo(results, instanceInfo);
-  
+
   if (startStopHandlers !== undefined && startStopHandlers.hasOwnProperty('postStop')) {
     customInstanceInfos['postStop'] = startStopHandlers.postStop(options,
                                                                  serverOptions,
@@ -555,6 +566,14 @@ function filterTestcaseByOptions (testname, options, whichFilter) {
     return false;
   }
 
+  if ((testname.indexOf('-noasan') !== -1) && global.ARANGODB_CLIENT_VERSION(true).asan === 'true') {
+    whichFilter.filter = 'skip when built with asan';
+    return false;
+  }
+
+  if (options.failed) {
+    return options.failed.hasOwnProperty(testname);
+  }
   return true;
 }
 
@@ -680,34 +699,41 @@ function loadClusterTestStabilityInfo(results, instanceInfo){
   }
 }
 
+function getTestCode(file, options, instanceInfo) {
+  let filter;
+  if (options.testCase) {
+    filter = JSON.stringify(options.testCase);
+  } else if (options.failed) {
+    let failed = options.failed[file] || options.failed;
+    filter = JSON.stringify(Object.keys(failed));
+  }
+
+  let runTest;
+  if (file.indexOf('-spec') === -1) {
+    filter = filter || '"undefined"';
+    runTest = 'const runTest = require("jsunity").runTest;\n';
+
+  } else {
+    filter = filter || '';
+    runTest = 'const runTest = require("@arangodb/mocha-runner");\n';
+  }
+  return 'global.instanceInfo = ' + JSON.stringify(instanceInfo) + ';\n' + runTest +
+         'return runTest(' + JSON.stringify(file) + ', true, ' + filter + ');\n';
+}
 // //////////////////////////////////////////////////////////////////////////////
 // / @brief runs a remote unittest file using /_admin/execute
 // //////////////////////////////////////////////////////////////////////////////
 
 function runThere (options, instanceInfo, file) {
   try {
-    let testCode;
-    if (file.indexOf('-spec') === -1) {
-      let testCase = JSON.stringify(options.testCase);
-      if (options.testCase === undefined) {
-        testCase = '"undefined"';
-      }
-      testCode = 'const runTest = require("jsunity").runTest; ' +
-        'return runTest(' + JSON.stringify(file) + ', true, ' + testCase + ');';
-    } else {
-      let mochaGrep = options.testCase ? ', ' + JSON.stringify(options.testCase) : '';
-      testCode = 'const runTest = require("@arangodb/mocha-runner"); ' +
-        'return runTest(' + JSON.stringify(file) + ', true' + mochaGrep + ');';
-    }
-
-    testCode = 'global.instanceInfo = ' + JSON.stringify(instanceInfo) + ';\n' + testCode;
-
+    let testCode = getTestCode(file, options, instanceInfo);
     let httpOptions = pu.makeAuthorizationHeaders(options);
     httpOptions.method = 'POST';
-    
-    if (options.isAsan) { options.oneTestTimeout *= 2; }
-    httpOptions.timeout = options.oneTestTimeout;
 
+    httpOptions.timeout = options.oneTestTimeout;
+    if (options.isAsan) {
+      httpOptions.timeout *= 2;
+    }
     if (options.valgrind) {
       httpOptions.timeout *= 2;
     }
@@ -806,7 +832,7 @@ function readTestResult(path, rc, testCase) {
     rc.failed = rc.status ? 0 : 1;
     rc.message = "readTestResult: don't know howto handle '" + buf + "'";
     return rc;
-  }    
+  }
 }
 
 function writeTestResult(path, data) {
@@ -868,26 +894,23 @@ function runInLocalArangosh (options, instanceInfo, file, addArgs) {
       arango.reconnect(newEndpoint, '_system', 'root', '');
     }
   }
-  
-  let testCode;
-  // \n's in testCode are required because of content could contain '//' at the very EOF
-  if (file.indexOf('-spec') === -1) {
-    let testCase = JSON.stringify(options.testCase);
-    if (options.testCase === undefined) {
-      testCase = '"undefined"';
-    }
-    testCode = 'const runTest = require("jsunity").runTest;\n ' +
-      'return runTest(' + JSON.stringify(file) + ', true, ' + testCase + ');\n';
-  } else {
-    let mochaGrep = options.testCase ? ', ' + JSON.stringify(options.testCase) : '';
-    testCode = 'const runTest = require("@arangodb/mocha-runner"); ' +
-      'return runTest(' + JSON.stringify(file) + ', true' + mochaGrep + ');\n';
-  }
 
+  let testCode = getTestCode(file, options, instanceInfo);
   require('internal').env.INSTANCEINFO = JSON.stringify(instanceInfo);
   let testFunc;
-  eval('testFunc = function () { \nglobal.instanceInfo = ' + JSON.stringify(instanceInfo) + ';\n' + testCode + "}");
-  
+  try {
+    eval('testFunc = function () {\n' + testCode + "}");
+  } catch (ex) {
+    print(RED + 'test failed to parse:');
+    print(ex);
+    print(RESET);
+    return {
+      status: false,
+      message: "test doesn't parse! '" + file + "' - " + ex.message || String(ex),
+      stack: ex.stack
+    };
+  }
+
   try {
     SetGlobalExecutionDeadlineTo(options.oneTestTimeout * 1000);
     let result = testFunc();
@@ -900,9 +923,19 @@ function runInLocalArangosh (options, instanceInfo, file, addArgs) {
         message: "test ran into timeout. Original test status: " + JSON.stringify(result),
       };
     }
+    if (result === undefined) {
+      return {
+        timeout: true,
+        status: false,
+        message: "test didn't return any result at all!"
+      };
+    }
     return result;
   } catch (ex) {
     let timeout = SetGlobalExecutionDeadlineTo(0.0);
+    print(RED + 'test has thrown: ' + (timeout? "because of timeout in execution":""));
+    print(ex);
+    print(RESET);
     return {
       timeout: timeout,
       forceTerminate: true,
@@ -914,17 +947,8 @@ function runInLocalArangosh (options, instanceInfo, file, addArgs) {
 }
 runInLocalArangosh.info = 'runInLocalArangosh';
 
-// //////////////////////////////////////////////////////////////////////////////
-// / @brief runs a unittest file using rspec
-// //////////////////////////////////////////////////////////////////////////////
-function camelize (str) {
-  return str.replace(/(?:^\w|[A-Z]|\b\w,)/g, function (letter, index) {
-    return index === 0 ? letter.toLowerCase() : letter.toUpperCase();
-  }).replace(/\s+/g, '_');
-}
-
 const parseRspecJson = function (testCase, res, totalDuration) {
-  let tName = camelize(testCase.description);
+  let tName = testCase.description;
   let status = (testCase.status === 'passed');
 
   if (res.hasOwnProperty(tName)) {
@@ -950,6 +974,10 @@ const parseRspecJson = function (testCase, res, totalDuration) {
   }
   return status ? 0 : 1;
 };
+
+// //////////////////////////////////////////////////////////////////////////////
+// / @brief runs a unittest file using rspec
+// //////////////////////////////////////////////////////////////////////////////
 function runInRSpec (options, instanceInfo, file, addArgs) {
   const tmpname = fs.join(instanceInfo.rootDir, 'testconfig.rb');
   const jsonFN = fs.join(instanceInfo.rootDir, 'testresult.json');
@@ -1005,9 +1033,20 @@ function runInRSpec (options, instanceInfo, file, addArgs) {
           '--format', 'd',
           '--format', 'j',
           '--out', jsonFN,
-          '--require', tmpname,
-          file
-         ];
+          '--require', tmpname];
+
+  if (options.testCase) {
+    args.push("--example-matches");
+    args.push(options.testCase + "$");
+  } else if (options.failed) {
+    let failed = Object.keys(options.failed[file]);
+    args.push("--example-matches");
+    let escapeRegExp = function(str) {
+      return str.replace(/([.*+?^${}()|[\]\/\\])/g, '\\$1');
+    };
+    args.push(failed.map(v => escapeRegExp(v)).join("$|") + "$");
+  }
+  args.push(file);
 
   if (rspec !== undefined) {
     args = [rspec].concat(args);
@@ -1082,3 +1121,4 @@ exports.doOnePathInner = doOnePathInner;
 exports.scanTestPaths = scanTestPaths;
 exports.diffArray = diffArray;
 exports.pathForTesting = pathForTesting;
+exports.findEndpoint = findEndpoint;

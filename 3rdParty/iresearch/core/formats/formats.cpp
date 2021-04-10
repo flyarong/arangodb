@@ -20,17 +20,17 @@
 /// @author Andrey Abramov
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "shared.hpp"
-#include "utils/register.hpp"
+#include "formats.hpp"
 
 // list of statically loaded formats via init()
 #ifndef IRESEARCH_DLL
   #include "formats_10.hpp"
 #endif
 
-#include "formats.hpp"
-#include "utils/type_limits.hpp"
+#include "analysis/token_attributes.hpp"
 #include "utils/hash_utils.hpp"
+#include "utils/type_limits.hpp"
+#include "utils/register.hpp"
 
 namespace {
 
@@ -70,7 +70,7 @@ class format_register :
   }
 }; // format_register
 
-iresearch::columnstore_reader::values_reader_f INVALID_COLUMN =
+irs::columnstore_reader::values_reader_f INVALID_COLUMN =
   [] (irs::doc_id_t, irs::bytes_ref&) { return false; };
 
 }
@@ -123,7 +123,6 @@ namespace iresearch {
     return factory ? factory() : nullptr;
   } catch (...) {
     IR_FRMT_ERROR("Caught exception while getting a format instance");
-    IR_LOG_EXCEPTION();
   }
 
   return nullptr;

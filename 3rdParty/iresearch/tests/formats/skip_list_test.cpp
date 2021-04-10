@@ -27,6 +27,8 @@
 #include "index/iterators.hpp"
 #include "index/index_tests.hpp"
 
+using namespace std::chrono_literals;
+
 namespace {
 
 class skip_writer_test : public test_base {
@@ -48,7 +50,7 @@ class skip_writer_test : public test_base {
 
     // write data
     {
-      size_t cur_doc = irs::integer_traits<size_t>::const_max;
+      size_t cur_doc = std::numeric_limits<size_t>::max();
 
       writer.prepare(
         max_levels, count,
@@ -203,7 +205,7 @@ TEST_F(skip_writer_test, reset) {
   const size_t count = 2873;
 
   std::vector<int> levels[max_levels];
-  size_t cur_doc = irs::integer_traits<size_t>::const_max;
+  size_t cur_doc = std::numeric_limits<size_t>::max();
 
   // prepare writer
   irs::skip_writer writer(skip, skip);

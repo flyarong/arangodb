@@ -40,6 +40,9 @@ const path = require('path');
 const FoxxManager = require('@arangodb/foxx/manager');
 const basePath = path.resolve(require("internal").pathForTesting('common'), 'test-data', 'apps', 'perdb1');
 
+const originalEndpoint = arango.getEndpoint();
+const originalUser = arango.connectedUser();
+
 function testSuite() {
   const jwtSecret = 'haxxmann';
 
@@ -109,6 +112,7 @@ function testSuite() {
     },
 
     tearDown : function() {
+      arango.reconnect(originalEndpoint, "_system", originalUser, "");
       // make sure self heal has run, otherwise we may not be able to uninstall
       let res = arango.POST(`/_admin/execute`, "require('@arangodb/foxx/manager').healAll(); return 1");
       assertEqual("1", res);
@@ -155,7 +159,6 @@ function testSuite() {
         assertTrue(shutdownStatus);
 
         let extraOptions = {
-          "database.old-system-collections": "false",
           "foxx.force-update-on-startup": "false",
           "foxx.queues": "false",
           "server.jwt-secret": jwtSecret
@@ -174,6 +177,7 @@ function testSuite() {
       }
       
       // make sure self heal has run, otherwise we may not be able to access the app
+      arango.reconnect(originalEndpoint, "_system", originalUser, "");
       let res = arango.POST(`/_admin/execute`, "require('@arangodb/foxx/manager').healAll(); return 1");
       assertEqual("1", res);
         
@@ -206,7 +210,6 @@ function testSuite() {
       assertTrue(shutdownStatus);
 
       let extraOptions = {
-        "database.old-system-collections": "false",
         "foxx.force-update-on-startup": "false",
         "foxx.queues": "false",
         "server.jwt-secret": jwtSecret
@@ -216,11 +219,12 @@ function testSuite() {
       waitForAlive(30, coordinator.url, {});
       
       // make sure self heal has run 
+      arango.reconnect(originalEndpoint, "_system", originalUser, "");
       let res = arango.POST(`/_admin/execute`, "require('@arangodb/foxx/manager').healAll(); return 1");
       assertEqual("1", res);
 
-      // try to request Foxx app. the app must be inaccessible, because self-heal
-      // hasn't run yet
+      // try to request Foxx app. the app must be accessible now, because we ran self-heal
+      // just now
       res = request({ method: "get", timeout: 3, url: coordinator.url + `/${mount}/echo` }); 
       assertEqual(200, res.status);
     },
@@ -250,7 +254,6 @@ function testSuite() {
       assertTrue(shutdownStatus);
 
       let extraOptions = {
-        "database.old-system-collections": "false",
         "foxx.force-update-on-startup": "true",
         "foxx.queues": "false",
         "server.jwt-secret": jwtSecret
@@ -261,7 +264,15 @@ function testSuite() {
 
       // try to request Foxx app. the app must be accessible, because of self-heal
       // at startup
-      let res = request({ method: "get", timeout: 3, url: coordinator.url + `/${mount}/echo` }); 
+      let tries = 0;
+      let res;
+      while (++tries < 30) {
+        res = request({ method: "get", timeout: 3, url: coordinator.url + `/${mount}/echo` }); 
+        if (res.status === 200) {
+          break;
+        }
+        require('internal').sleep(0.5);
+      }
       assertEqual(200, res.status);
     },
     
